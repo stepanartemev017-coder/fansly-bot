@@ -11,9 +11,11 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # =======================================================
 # НАСТРОЙКИ: Замените значения на свои данные
 # =======================================================
-BOT_TOKEN = "8985257496:AAFg99so12mVX6jR3HwzsoG77A6kBEoF2nE"  # Кавычки оставляем
+BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNxJ1nQM5Rkag"  # Кавычки оставляем
 ADMIN_GROUP_ID = -5136108392  # ID группы отчетов (без кавычек!)
-OWNER_TELEGRAM_ID = 8207913329  # ВСТАВЬТЕ СЮДА ВАШ ЛИЧНЫЙ ID ИЗ @myidbot (число без кавычек)
+
+# Список ID владельцев бота (теперь без синтаксических ошибок!)
+OWNERS_TELEGRAM_IDS = [963341281, 8207913329]
 # =======================================================
 
 bot = Bot(token=BOT_TOKEN)
@@ -54,12 +56,14 @@ class ShiftState(StatesGroup):
 
 # Главная клавиатура
 def get_main_keyboard(user_id: int):
+    # Кнопки, которые видят абсолютно ВСЕ пользователи
     buttons = [
         [types.KeyboardButton(text="🟢 Пост принял")],
         [types.KeyboardButton(text="🔴 Пост сдал")],
-        [types.KeyboardButton(text="📊 Инфо за месяц")]
+        [types.KeyboardButton(text="📊 Инфо за месяц"), types.KeyboardButton(text="📋 Участники")]
     ]
-    if user_id == OWNER_TELEGRAM_ID:
+    # Если зашел один из двух овнеров, ему добавляется скрытая кнопка очистки
+    if user_id in OWNERS_TELEGRAM_IDS:
         buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
         
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -213,9 +217,37 @@ async def process_statistics(message: types.Message):
     await message.answer(response, parse_mode="Markdown")
 
 
+# --- ВКЛАДКА: СПИСОК УЧАСТНИКОВ (ВИДЯТ ВСЕ) ---
+@dp.message(F.text == "📋 Участники")
+async def process_show_members(message: types.Message):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # Достаем людей, у которых user_id не пустой (кто хоть раз пользовался)
+    cursor.execute('''
+        SELECT DISTINCT full_name, username 
+        FROM shifts 
+        WHERE user_id IS NOT NULL
+    ''')
+    members = cursor.fetchall()
+    conn.close()
+    
+    response = "📋 **Участники (все, кто пользовался ботом):**\n\n"
+    
+    if not members:
+        response += "В базе данных пока нет зарегистрированных участников."
+    else:
+        for idx, (full_name, username) in enumerate(members, 1):
+            user_link = f"@{username}" if username else "нет юзернейма"
+            response += f"{idx}. {full_name} ({user_link})\n"
+            
+    await message.answer(response, parse_mode="Markdown")
+
+
 @dp.message(F.text == "🧹 Очистить месяц")
 async def process_clear_database_request(message: types.Message):
-    if message.from_user.id != OWNER_TELEGRAM_ID:
+    # Проверка: входит ли ID пользователя в список разрешенных овнеров
+    if message.from_user.id not in OWNERS_TELEGRAM_IDS:
         await message.answer("🛑 У вас нет прав для выполнения этой команды.")
         return
         
@@ -229,7 +261,8 @@ async def process_clear_database_request(message: types.Message):
 
 @dp.callback_query(F.data == "db_confirm_clear")
 async def callback_confirm_clear(callback: types.CallbackQuery):
-    if callback.from_user.id != OWNER_TELEGRAM_ID:
+    # Повторная проверка безопасности для инлайн-кнопки
+    if callback.from_user.id not in OWNERS_TELEGRAM_IDS:
         await callback.answer("🛑 Отказано в доступе.", show_alert=True)
         return
         
@@ -239,23 +272,3 @@ async def callback_confirm_clear(callback: types.CallbackQuery):
     conn.commit()
     conn.close()
     
-    await callback.message.edit_text("🧹 **База данных успешно очищена!** Все балансы за месяц и история смен сброшены до нуля.", parse_mode="Markdown")
-    await callback.answer("База данных успешно очищена!")
-
-
-@dp.callback_query(F.data == "db_cancel_clear")
-async def callback_cancel_clear(callback: types.CallbackQuery):
-    await callback.message.edit_text("❌ Очистка базы данных отменена. Данные чаттеров в безопасности.")
-    await callback.answer("Действие отменено.")
-
-
-# --- ПРАВИЛЬНЫЙ АСИНХРОННЫЙ ЗАПУСК ДЛЯ AIOGRAM 3 ---
-async def main():
-    init_db()
-    print("Бот успешно запущен на московском времени (период: месяц)...")
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
-
-
-if __name__ == '__main__':
-    asyncio.run(main())
