@@ -12,7 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ========================================================
 BOT_TOKEN = "8985257496:AAFg99so12mVX6jR3HwzsoG77A6kBEoF2nE"  # Кавычки оставляем
 ADMIN_GROUP_ID = -5136108392  # ID группы отчетов (без кавычек!)
-OWNER_TELEGRAM_ID = [ 963341281, 8207913329 ]   # ВСТАВЬТЕ СЮДА ВАШ ЛИЧНЫЙ ID ИЗ @myidbot (число без кавычек)
+OWNER_TELEGRAM_ID = 8207913329   # ВСТАВЬТЕ СЮДА ВАШ ЛИЧНЫЙ ID ИЗ @myidbot (число без кавычек)
 # ========================================================
 
 bot = Bot(token=BOT_TOKEN)
