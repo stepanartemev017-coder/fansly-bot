@@ -11,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ================================================
 # НАСТРОЙКИ
 # ================================================
-BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNXJ1nQM5Rkag"
+BOT_TOKEN = "8985257496:AAF8XxPVAA-CarYbnm8D3Pe0J65OLVOJco4"
 ADMIN_GROUP_ID = -5136108392
 OWNER_IDS = {963341281, 8207913329}  # список ID владельцев бота (видят "Очистить месяц" и "Добавить баланс")
 # ================================================
@@ -61,7 +61,7 @@ class AddBalanceState(StatesGroup):
 
 # Тексты главных кнопок меню — используются, чтобы понять,
 # что пользователь хочет "выйти" из текущего процесса (например, из ввода заработка)
-MENU_PREFIXES = ("🟢", "🔴", "📊", "🧹", "➕")
+MENU_PREFIXES = ("🟢", "🔴", "📊", "🧹", "➕", "👥")
 
 
 def is_menu_button(text: str) -> bool:
@@ -85,6 +85,8 @@ async def route_menu_button(message: types.Message, state: FSMContext):
         await process_clear_database_request(message)
     elif message.text.startswith("➕"):
         await process_add_balance_start(message, state)
+    elif message.text.startswith("👥"):
+        await process_participants_list(message)
 
 
 # Главная клавиатура
@@ -96,6 +98,7 @@ def get_main_keyboard(user_id: int):
     ]
     if user_id in OWNER_IDS:
         buttons.append([types.KeyboardButton(text="➕ Добавить баланс")])
+        buttons.append([types.KeyboardButton(text="👥 Список участников")])
         buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
 
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -344,53 +347,123 @@ async def process_add_balance_comment(message: types.Message, state: FSMContext)
 
 @dp.message(F.text.in_({"📊 Инфо за month", "📊 Инфо за месяц"}))
 async def process_statistics(message: types.Message):
-    one_month_ago = get_moscow_time() - timedelta(days=30)
-    one_month_ago_str = one_month_ago.strftime("%Y-%m-%d %H:%M:%S")
+    now = get_moscow_time()
+    # Границы текущего календарного месяца и середины (для двух периодов ЗП: 1-15 и 16-конец)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if now.month == 12:
+        next_month_start = month_start.replace(year=now.year + 1, month=1)
+    else:
+        next_month_start = month_start.replace(month=now.month + 1)
+
+    month_start_str = month_start.strftime("%Y-%m-%d %H:%M:%S")
+    next_month_start_str = next_month_start.strftime("%Y-%m-%d %H:%M:%S")
 
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-
     cursor.execute('''
-        SELECT full_name, username, SUM(earnings)
+        SELECT user_id, username, full_name, action, timestamp, earnings
         FROM shifts
-        WHERE timestamp >= ? AND action = 'сдал'
-        GROUP BY user_id
-    ''', (one_month_ago_str,))
-    balances = cursor.fetchall()
-
-    cursor.execute('''
-        SELECT full_name, action, timestamp, earnings
-        FROM shifts
-        WHERE timestamp >= ?
-        ORDER BY timestamp DESC
-        LIMIT 20
-    ''', (one_month_ago_str,))
-    recent_actions = cursor.fetchall()
+        WHERE timestamp >= ? AND timestamp < ?
+        ORDER BY full_name, timestamp ASC
+    ''', (month_start_str, next_month_start_str))
+    rows = cursor.fetchall()
     conn.close()
 
-    response = "📊 **ОТЧЕТ ЗА ПОСЛЕДНИЙ МЕСЯЦ (МСК)**\n\n"
-    response += "💰 **Баланс чаттеров (Общий заработок):**\n"
+    if not rows:
+        await message.answer(f"📊 **ОТЧЕТ ЗА {now.strftime('%m.%Y')} (МСК)**\n\nЗа текущий месяц данных пока нет.", parse_mode="Markdown")
+        return
 
-    if not balances:
-        response += "Нет данных о заработке.\n"
-    for name, username, total in balances:
-        user_link = f"@{username}" if username else "нет юзернейма"
-        response += f"• {name} ({user_link}): **${total:.2f}**\n"
+    # Группируем все записи по каждому чаттеру, отдельно считая период 1-15 и 16-конец месяца
+    chatters = {}
+    order = []
+    for user_id, username, full_name, action, dt_str, earnings in rows:
+        key = (user_id or 0, full_name)
+        if key not in chatters:
+            chatters[key] = {
+                "username": username, "full_name": full_name,
+                "total_p1": 0.0, "total_p2": 0.0, "actions": []
+            }
+            order.append(key)
+        if username and not chatters[key]["username"]:
+            chatters[key]["username"] = username
 
-    response += "\n🕘 **Последние действия на сменах:**\n"
-    if not recent_actions:
-        response += "История пуста.\n"
-    for name, action, dt_str, earn in recent_actions:
         try:
             dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
             dt_formatted = dt.strftime("%d.%m %H:%M")
+            day = dt.day
         except ValueError:
             dt_formatted = dt_str
+            day = 1  # fallback, если формат даты неожиданный
 
-        if action == "принял":
-            response += f"🟢 {dt_formatted} - {name} принял пост\n"
+        period = 1 if day <= 15 else 2
+        if action == "сдал" and earnings:
+            if period == 1:
+                chatters[key]["total_p1"] += earnings
+            else:
+                chatters[key]["total_p2"] += earnings
+
+        chatters[key]["actions"].append((dt_formatted, action, earnings, period))
+
+    parts = [f"📊 **ОТЧЕТ ЗА {now.strftime('%m.%Y')} (МСК)**\n"]
+
+    for key in order:
+        info = chatters[key]
+        user_link = f"@{info['username']}" if info['username'] else "нет юзернейма"
+        total = info["total_p1"] + info["total_p2"]
+        block = (
+            f"\n👤 **{info['full_name']}** ({user_link})\n"
+            f"   💵 1–15 число: **${info['total_p1']:.2f}**\n"
+            f"   💵 16–конец месяца: **${info['total_p2']:.2f}**\n"
+            f"   💰 Итого за месяц: **${total:.2f}**\n"
+        )
+        for dt_formatted, action, earnings, period in info["actions"]:
+            if action == "принял":
+                block += f"   🟢 {dt_formatted} — принял пост\n"
+            else:
+                block += f"   🔴 {dt_formatted} — сдал (${earnings:.2f})\n"
+
+        # Telegram режет сообщения на 4096 символов — если ответ разрастается, шлём частями
+        if len(parts[-1]) + len(block) > 3800:
+            parts.append(block)
         else:
-            response += f"🔴 {dt_formatted} - {name} сдал пост (Заработано: ${earn})\n"
+            parts[-1] += block
+
+    for part in parts:
+        await message.answer(part, parse_mode="Markdown")
+
+
+@dp.message(F.text.startswith("👥"))
+async def process_participants_list(message: types.Message):
+    if message.from_user.id not in OWNER_IDS:
+        await message.answer("🔴 У вас нет прав для просмотра этого списка.")
+        return
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT username, full_name,
+               SUM(CASE WHEN action='сдал' THEN earnings ELSE 0 END) as total,
+               MAX(timestamp) as last_seen
+        FROM shifts
+        GROUP BY full_name
+        ORDER BY full_name COLLATE NOCASE
+    ''')
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        await message.answer("👥 **СПИСОК УЧАСТНИКОВ**\n\nПока никто не отмечался.", parse_mode="Markdown")
+        return
+
+    response = "👥 **СПИСОК УЧАСТНИКОВ**\n\n"
+    for username, full_name, total, last_seen in rows:
+        user_link = f"@{username}" if username else "нет юзернейма"
+        try:
+            last_dt = datetime.strptime(last_seen, "%Y-%m-%d %H:%M:%S")
+            last_str = last_dt.strftime("%d.%m.%Y %H:%M")
+        except (ValueError, TypeError):
+            last_str = last_seen or "—"
+        response += f"• **{full_name}** ({user_link})\n   Всего заработано: ${total:.2f} | Последняя активность: {last_str}\n\n"
 
     await message.answer(response, parse_mode="Markdown")
 
