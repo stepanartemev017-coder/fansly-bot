@@ -8,14 +8,12 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # ========================================================
-# НАСТРОЙКИ: Замените значения на свои данные
+# ЖЕСТКИЕ НАСТРОЙКИ С ВАШЕГО СКРИНШОТА
 # ========================================================
-BOT_TOKEN = "8985257496:AAFg99so12mVX6jR3HwzsoG77A6kBEoF2nE"  # Кавычки оставляем
-ADMIN_GROUP_ID = -5136108392  # ID группы отчетов (без кавычек!)
-SECRET_CODE = "315699"  # СЕКРЕТНОЕ СЛОВО ДЛЯ ЧАТТЕРОВ
-
-# СЮДА ЧЕРЕЗ ЗАПЯТУЮ ВПИШИТЕ ДВА ID ВЛАДЕЛЬЦЕВ (числа без кавычек)
-OWNERS_IDS = [8207913329, 963341281]  
+BOT_TOKEN = "8985257496:AAFg99so12mVX6jR3HwzsoG77A6kBEoF2nE"
+ADMIN_GROUP_ID = -5136108392
+SECRET_CODE = "315699"
+OWNERS_IDS = [8207913329, 963341281]
 # ========================================================
 
 bot = Bot(token=BOT_TOKEN)
@@ -120,7 +118,7 @@ async def process_auth_code(message: types.Message, state: FSMContext):
     else:
         await message.answer("❌ Неверный код активации. Попробуйте еще раз или обратитесь к администратору:")
 
-@dp.message(F.text == "🟢 Пост принял")
+@dp.message(lambda msg: msg.text == "🟢 Пост принял")
 async def process_shift_start(message: types.Message):
     if not is_user_allowed(message.from_user.id):
         await message.answer("⛔ У вас нет доступа. Нажмите /start для активации.")
@@ -142,7 +140,7 @@ async def process_shift_start(message: types.Message):
     await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
     await message.answer("✅ Вход на смену зафиксирован! Удачной работы.")
 
-@dp.message(F.text == "🔴 Пост сдал")
+@dp.message(lambda msg: msg.text == "🔴 Пост сдал")
 async def process_shift_end_start(message: types.Message, state: FSMContext):
     if not is_user_allowed(message.from_user.id):
         await message.answer("⛔ У вас нет доступа. Нажмите /start для активации.")
@@ -198,7 +196,7 @@ async def process_screenshot(message: types.Message, state: FSMContext):
     await message.answer("✅ Отчет успешно отправлен руководством! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
     await state.clear()
 
-@dp.message(F.text == "📊 Инфо за месяц")
+@dp.message(lambda msg: msg.text == "📊 Инфо за месяц")
 async def process_statistics(message: types.Message):
     if not is_user_allowed(message.from_user.id):
         await message.answer("⛔ У вас нет доступа.")
@@ -253,7 +251,7 @@ async def process_statistics(message: types.Message):
             
     await message.answer(response, parse_mode="Markdown")
 
-@dp.message(F.text == "👥 Участники")
+@dp.message(lambda msg: msg.text == "👥 Участники")
 async def process_view_users(message: types.Message):
     if message.from_user.id not in OWNERS_IDS:
         await message.answer("⛔ У вас нет прав для выполнения этой команды.")
@@ -263,3 +261,7 @@ async def process_view_users(message: types.Message):
     cursor = conn.cursor()
     cursor.execute("SELECT username, full_name FROM users")
     all_users = cursor.fetchall()
+    conn.close()
+    
+    response = "👥 **СПИСОК УЧАСТНИКОВ (Кто ввёл код):**\n\n"
+    if not all_users:
