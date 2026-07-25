@@ -13,13 +13,21 @@ from aiogram.fsm.storage.memory import MemoryStorage
 BOT_TOKEN = "8985257496:AAFg99so12mVX6jR3HwzsoG77A6kBEoF2nE"  # Кавычки оставляем
 ADMIN_GROUP_ID = -5136108392  # ID группы отчетов (без кавычек!)
 OWNER_TELEGRAM_ID = 963341281  # ВСТАВЬТЕ СЮДА ВАШ ЛИЧНЫЙ ID ИЗ @myidbot (число без кавычек)
+SECRET_CODE = "315699"  # СЕКРЕТНОЕ СЛОВО ДЛЯ ЧАТТЕРОВ
 # ========================================================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 DB_NAME = "reports.db"
 
-# Функция получения текущего времени по Москве (UTC+3)
+class AuthState(StatesGroup):
+    waiting_for_code = State()
+
+class ShiftState(StatesGroup):
+    waiting_for_earnings = State()
+    waiting_for_info = State()
+    waiting_for_screenshot = State()
+
 def get_moscow_time():
     tz_moscow = timezone(timedelta(hours=3))
     return datetime.now(tz_moscow)
@@ -39,46 +47,83 @@ def init_db():
             comment TEXT
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            full_name TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
 
-class ShiftState(StatesGroup):
-    waiting_for_earnings = State()
-    waiting_for_info = State()
-    waiting_for_screenshot = State()
+def is_user_allowed(user_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+    user = cursor.fetchone()
+    conn.close()
+    return user is not None or user_id == OWNER_TELEGRAM_ID
 
-# Главная клавиатура
 def get_main_keyboard(user_id: int):
     buttons = [
         [types.KeyboardButton(text="🟢 Пост принял")],
         [types.KeyboardButton(text="🔴 Пост сдал")],
         [types.KeyboardButton(text="📊 Инфо за месяц")]
     ]
+    # Только для владельца добавляем кнопки управления
     if user_id == OWNER_TELEGRAM_ID:
+        buttons.append([types.KeyboardButton(text="👥 Участники")])
         buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
         
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-# Inline-клавиатура для подтверждения очистки
 def get_confirm_keyboard():
     buttons = [
         [
-            types.InlineKeyboardButton(text="✅ Да, очистить базу", callback_data="db_confirm_clear"),
+            types.InlineKeyboardButton(text="⚠️ Подтвердить удаление", callback_data="db_confirm_clear"),
             types.InlineKeyboardButton(text="❌ Отмена", callback_data="db_cancel_clear")
         ]
     ]
     return types.InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await message.answer(
-        f"Привет, {message.from_user.full_name}! Я бот для отчетов Fansly (Время: МСК).\n"
-        "Используй кнопки ниже для управления сменой.",
-        reply_markup=get_main_keyboard(message.from_user.id)
-    )
+async def cmd_start(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    if is_user_allowed(user_id):
+        await message.answer(
+            f"Привет, {message.from_user.full_name}! Рад видеть тебя снова.\n"
+            "Используй кнопки ниже для управления сменой (Время: МСК).",
+            reply_markup=get_main_keyboard(user_id)
+        )
+    else:
+        await message.answer("введите код входа")
+        await state.set_state(AuthState.waiting_for_code)
+
+@dp.message(AuthState.waiting_for_code)
+async def process_auth_code(message: types.Message, state: FSMContext):
+    if message.text == SECRET_CODE:
+        user = message.from_user
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        # Сохраняем ID, юзернейм и имя чаттера для списка участников
+        cursor.execute(
+            "INSERT OR IGNORE INTO users (user_id, username, full_name) VALUES (?, ?, ?)", 
+            (user.id, user.username, user.full_name)
+        )
+        conn.commit()
+        conn.close()
+        await message.answer("✅ **Доступ успешно открыт!**\nТеперь вы можете полноценно использовать бота.", reply_markup=get_main_keyboard(user.id))
+        await state.clear()
+    else:
+        await message.answer("❌ Неверный код активации. Попробуйте еще раз или обратитесь к администратору:")
 
 @dp.message(F.text == "🟢 Пост принял")
 async def process_shift_start(message: types.Message):
+    if not is_user_allowed(message.from_user.id):
+        await message.answer("⛔ У вас нет доступа. Нажмите /start для активации.")
+        return
+        
     user = message.from_user
     now = get_moscow_time()
     
@@ -97,6 +142,10 @@ async def process_shift_start(message: types.Message):
 
 @dp.message(F.text == "🔴 Пост сдал")
 async def process_shift_end_start(message: types.Message, state: FSMContext):
+    if not is_user_allowed(message.from_user.id):
+        await message.answer("⛔ У вас нет доступа. Нажмите /start для активации.")
+        return
+        
     await message.answer("Сколько ты заработал на смене (введи только число, например: 150 или 75.5)?")
     await state.set_state(ShiftState.waiting_for_earnings)
 
@@ -113,7 +162,7 @@ async def process_earnings(message: types.Message, state: FSMContext):
 @dp.message(ShiftState.waiting_for_info)
 async def process_info(message: types.Message, state: FSMContext):
     await state.update_data(comment=message.text)
-    await message.answer("Отправь скриншот(ы) продаж (одним фото).")
+    await message.answer("Отправь скриншот(ы) продаж.")
     await state.set_state(ShiftState.waiting_for_screenshot)
 
 @dp.message(ShiftState.waiting_for_screenshot, F.photo)
@@ -149,6 +198,10 @@ async def process_screenshot(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "📊 Инфо за месяц")
 async def process_statistics(message: types.Message):
+    if not is_user_allowed(message.from_user.id):
+        await message.answer("⛔ У вас нет доступа.")
+        return
+        
     one_month_ago = get_moscow_time() - timedelta(days=30)
     one_month_ago_str = one_month_ago.strftime("%Y-%m-%d %H:%M:%S")
     
@@ -198,43 +251,10 @@ async def process_statistics(message: types.Message):
             
     await message.answer(response, parse_mode="Markdown")
 
-# --- СТАДИЯ 1 ОЧИСТКИ: Запрос подтверждения ---
-@dp.message(F.text == "🧹 Очистить месяц")
-async def process_clear_database_request(message: types.Message):
+# --- ВКУЛАДКА СПИСКА УЧАСТНИКОВ (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА) ---
+@dp.message(F.text == "👥 Участники")
+async def process_view_users(message: types.Message):
     if message.from_user.id != OWNER_TELEGRAM_ID:
         await message.answer("⛔ У вас нет прав для выполнения этой команды.")
         return
         
-    await message.answer(
-        "⚠️ **ВНИМАНИЕ!** Вы собираетесь полностью очистить базу данных за месяц.\n"
-        "Все балансы сотрудников и история смен будут безвозвратно удалены. Вы уверены?",
-        reply_markup=get_confirm_keyboard(),
-        parse_mode="Markdown"
-    )
-
-# --- СТАДИЯ 2 ОЧИСТКИ: Обработка клика по кнопке «✅ Да, очистить базу» ---
-@dp.callback_query(F.data == "db_confirm_clear")
-async def callback_confirm_clear(callback: types.CallbackQuery):
-    if callback.from_user.id != OWNER_TELEGRAM_ID:
-        await callback.answer("⛔ Отказано в доступе.", show_alert=True)
-        return
-        
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM shifts")
-    conn.commit()
-    conn.close()
-    
-    await callback.message.edit_text("🧹 **База данных успешно очищена!** Все балансы за месяц и история смен сброшены до нуля.", parse_mode="Markdown")
-    await callback.answer("База данных успешно очищена!")
-
-# --- ОТМЕНА ОЧИСТКИ ---
-@dp.callback_query(F.data == "db_cancel_clear")
-async def callback_cancel_clear(callback: types.CallbackQuery):
-    await callback.message.edit_text("❌ Очистка базы данных отменена. Данные чаттеров в безопасности.")
-    await callback.answer("Действие отменено.")
-
-if __name__ == '__main__':
-    init_db()
-    print("Бот успешно запущен на московском времени (период: месяц)...")
-    dp.run_polling(bot)
