@@ -8,20 +8,16 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # ========================================================
-# ЖЕСТКИЕ НАСТРОЙКИ С ВАШЕГО СКРИНШОТА
+# ЖЕСТКИЕ НАСТРОЙКИ (ВШИТЫ НАМЕРТВО)
 # ========================================================
 BOT_TOKEN = "8985257496:AAFg99so12mVX6jR3HwzsoG77A6kBEoF2nE"
 ADMIN_GROUP_ID = -5136108392
-SECRET_CODE = "315699"
-OWNERS_IDS = [8207913329, 963341281]
+OWNERS_IDS = [8207913329, 963341281]  # Два ваших ID
 # ========================================================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 DB_NAME = "reports.db"
-
-class AuthState(StatesGroup):
-    waiting_for_code = State()
 
 class ShiftState(StatesGroup):
     waiting_for_earnings = State()
@@ -57,73 +53,40 @@ def init_db():
     conn.commit()
     conn.close()
 
-def is_user_allowed(user_id: int):
-    if user_id in OWNERS_IDS:
-        return True
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-    user = cursor.fetchone()
-    conn.close()
-    return user is not None
-
 def get_main_keyboard(user_id: int):
     buttons = [
         [types.KeyboardButton(text="🟢 Пост принял")],
         [types.KeyboardButton(text="🔴 Пост сдал")],
         [types.KeyboardButton(text="📊 Инфо за месяц")]
     ]
+    # Только для владельцев добавляем кнопку просмотра участников
     if user_id in OWNERS_IDS:
         buttons.append([types.KeyboardButton(text="👥 Участники")])
-        buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
         
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-def get_confirm_keyboard():
-    buttons = [
-        [
-            types.InlineKeyboardButton(text="⚠️ Подтвердить удаление", callback_data="db_confirm_clear"),
-            types.InlineKeyboardButton(text="❌ Отмена", callback_data="db_cancel_clear")
-        ]
-    ]
-    return types.InlineKeyboardMarkup(inline_keyboard=buttons)
-
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    if is_user_allowed(user_id):
-        await message.answer(
-            f"Привет, {message.from_user.full_name}! Рад видеть тебя снова.\n"
-            "Используй кнопки ниже для управления сменой (Время: МСК).",
-            reply_markup=get_main_keyboard(user_id)
-        )
-    else:
-        await message.answer("введите код входа")
-        await state.set_state(AuthState.waiting_for_code)
-
-@dp.message(AuthState.waiting_for_code)
-async def process_auth_code(message: types.Message, state: FSMContext):
-    if message.text == SECRET_CODE:
-        user = message.from_user
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT OR IGNORE INTO users (user_id, username, full_name) VALUES (?, ?, ?)", 
-            (user.id, user.username, user.full_name)
-        )
-        conn.commit()
-        conn.close()
-        await message.answer("✅ **Доступ успешно открыт!**\nТеперь вы можете полноценно использовать бота.", reply_markup=get_main_keyboard(user.id))
-        await state.clear()
-    else:
-        await message.answer("❌ Неверный код активации. Попробуйте еще раз или обратитесь к администратору:")
+async def cmd_start(message: types.Message):
+    user = message.from_user
+    
+    # Автоматически сохраняем каждого, кто нажал /start
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR IGNORE INTO users (user_id, username, full_name) VALUES (?, ?, ?)", 
+        (user.id, user.username, user.full_name)
+    )
+    conn.commit()
+    conn.close()
+    
+    await message.answer(
+        f"Привет, {user.full_name}! Я бот для отчетов Fansly.\n"
+        "Используй кнопки ниже для управления сменой (Время: МСК).",
+        reply_markup=get_main_keyboard(user.id)
+    )
 
 @dp.message(lambda msg: msg.text == "🟢 Пост принял")
 async def process_shift_start(message: types.Message):
-    if not is_user_allowed(message.from_user.id):
-        await message.answer("⛔ У вас нет доступа. Нажмите /start для активации.")
-        return
-        
     user = message.from_user
     now = get_moscow_time()
     
@@ -142,10 +105,6 @@ async def process_shift_start(message: types.Message):
 
 @dp.message(lambda msg: msg.text == "🔴 Пост сдал")
 async def process_shift_end_start(message: types.Message, state: FSMContext):
-    if not is_user_allowed(message.from_user.id):
-        await message.answer("⛔ У вас нет доступа. Нажмите /start для активации.")
-        return
-        
     await message.answer("Сколько ты заработал на смене (введи только число, например: 150 или 75.5)?")
     await state.set_state(ShiftState.waiting_for_earnings)
 
@@ -198,10 +157,6 @@ async def process_screenshot(message: types.Message, state: FSMContext):
 
 @dp.message(lambda msg: msg.text == "📊 Инфо за месяц")
 async def process_statistics(message: types.Message):
-    if not is_user_allowed(message.from_user.id):
-        await message.answer("⛔ У вас нет доступа.")
-        return
-        
     one_month_ago = get_moscow_time() - timedelta(days=30)
     one_month_ago_str = one_month_ago.strftime("%Y-%m-%d %H:%M:%S")
     
@@ -263,5 +218,16 @@ async def process_view_users(message: types.Message):
     all_users = cursor.fetchall()
     conn.close()
     
-    response = "👥 **СПИСОК УЧАСТНИКОВ (Кто ввёл код):**\n\n"
+    response = "👥 **СПИСОК УЧАСТНИКОВ (Кто писал /start):**\n\n"
     if not all_users:
+        response += "Пока никто не запускал бота."
+    for username, full_name in all_users:
+        user_link = f"@{username}" if username else "нет юзернейма"
+        response += f"• {full_name} ({user_link})\n"
+        
+    await message.answer(response, parse_mode="Markdown")
+
+if __name__ == '__main__':
+    init_db()
+    print("Бот успешно запущен...")
+    dp.run_polling(bot)
