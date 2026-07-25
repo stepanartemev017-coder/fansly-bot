@@ -11,14 +11,15 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ================================================
 # НАСТРОЙКИ
 # ================================================
-BOT_TOKEN = "8985257496:AAF8XxPVAA-CarYbnm8D3Pe0J65OLVOJco4"
+BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNXJ1nQM5Rkag"
 ADMIN_GROUP_ID = -5136108392
-OWNER_IDS = {963341281, 8207913329}  # список ID владельцев бота
+OWNER_IDS = {963341281, 8207913329}  # список ID владельцев бота (видят "Очистить месяц" и "Добавить баланс")
 # ================================================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 DB_NAME = "reports.db"
+
 
 # Функция получения текущего времени по Москве (UTC+3)
 def get_moscow_time():
@@ -51,15 +52,39 @@ class ShiftState(StatesGroup):
     waiting_for_screenshot = State()
 
 
+class AddBalanceState(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_username = State()
+    waiting_for_amount = State()
+    waiting_for_comment = State()
+
+
 # Тексты главных кнопок меню — используются, чтобы понять,
 # что пользователь хочет "выйти" из текущего процесса (например, из ввода заработка)
-MENU_PREFIXES = ("🟢", "🔴", "📊", "🧹")
+MENU_PREFIXES = ("🟢", "🔴", "📊", "🧹", "➕")
 
 
 def is_menu_button(text: str) -> bool:
     if not text:
         return False
     return any(text.startswith(p) for p in MENU_PREFIXES)
+
+
+async def route_menu_button(message: types.Message, state: FSMContext):
+    """Вызывается, когда пользователь нажал одну из кнопок главного меню,
+    находясь в середине другого процесса (ввод заработка/комментария/скриншота/баланса).
+    Сбрасывает текущий процесс и обрабатывает нажатую кнопку как обычно."""
+    await state.clear()
+    if message.text.startswith("🟢"):
+        await process_shift_start(message, state)
+    elif message.text.startswith("🔴"):
+        await process_shift_end_start(message, state)
+    elif message.text.startswith("📊"):
+        await process_statistics(message)
+    elif message.text.startswith("🧹"):
+        await process_clear_database_request(message)
+    elif message.text.startswith("➕"):
+        await process_add_balance_start(message, state)
 
 
 # Главная клавиатура
@@ -70,6 +95,7 @@ def get_main_keyboard(user_id: int):
         [types.KeyboardButton(text="📊 Инфо за месяц")]
     ]
     if user_id in OWNER_IDS:
+        buttons.append([types.KeyboardButton(text="➕ Добавить баланс")])
         buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
 
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -89,11 +115,21 @@ def get_confirm_keyboard():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
+    is_owner = message.from_user.id in OWNER_IDS
+    owner_note = "\n\n✅ Ты в списке владельцев." if is_owner else "\n\n⚠️ Ты НЕ в списке владельцев (нет доступа к «Очистить месяц» и «Добавить баланс»)."
     await message.answer(
         f"Привет, {message.from_user.full_name}! Я бот для отчетов Fansly (Время: МСК).\n"
-        "Используй кнопки ниже для управления сменой.",
-        reply_markup=get_main_keyboard(message.from_user.id)
+        "Используй кнопки ниже для управления сменой.\n\n"
+        f"🆔 Твой Telegram ID: `{message.from_user.id}`"
+        f"{owner_note}",
+        reply_markup=get_main_keyboard(message.from_user.id),
+        parse_mode="Markdown"
     )
+
+
+@dp.message(Command("id"))
+async def cmd_id(message: types.Message):
+    await message.answer(f"🆔 Твой Telegram ID: `{message.from_user.id}`", parse_mode="Markdown")
 
 
 @dp.message(F.text.startswith("🟢"))
@@ -125,18 +161,8 @@ async def process_shift_end_start(message: types.Message, state: FSMContext):
 
 @dp.message(ShiftState.waiting_for_earnings)
 async def process_earnings(message: types.Message, state: FSMContext):
-    # Если во время ввода числа человек нажал другую кнопку меню — не блокируем его,
-    # а сбрасываем текущий процесс и обрабатываем нажатую кнопку как обычно.
     if is_menu_button(message.text):
-        await state.clear()
-        if message.text.startswith("🟢"):
-            await process_shift_start(message, state)
-        elif message.text.startswith("🔴"):
-            await process_shift_end_start(message, state)
-        elif message.text.startswith("📊"):
-            await process_statistics(message)
-        elif message.text.startswith("🧹"):
-            await process_clear_database_request(message)
+        await route_menu_button(message, state)
         return
 
     try:
@@ -151,15 +177,7 @@ async def process_earnings(message: types.Message, state: FSMContext):
 @dp.message(ShiftState.waiting_for_info)
 async def process_info(message: types.Message, state: FSMContext):
     if is_menu_button(message.text):
-        await state.clear()
-        if message.text.startswith("🟢"):
-            await process_shift_start(message, state)
-        elif message.text.startswith("🔴"):
-            await process_shift_end_start(message, state)
-        elif message.text.startswith("📊"):
-            await process_statistics(message)
-        elif message.text.startswith("🧹"):
-            await process_clear_database_request(message)
+        await route_menu_button(message, state)
         return
 
     await state.update_data(comment=message.text)
@@ -167,15 +185,20 @@ async def process_info(message: types.Message, state: FSMContext):
     await state.set_state(ShiftState.waiting_for_screenshot)
 
 
-@dp.message(ShiftState.waiting_for_screenshot, F.photo)
-async def process_screenshot(message: types.Message, state: FSMContext):
+# Буфер для сборки альбома скриншотов: когда пользователь прикрепляет несколько фото
+# сразу, Telegram присылает их как отдельные апдейты с одним и тем же media_group_id.
+# Мы копим все фото с одним media_group_id и через небольшую паузу отправляем один отчёт.
+album_buffers: dict = {}
+ALBUM_WAIT_SECONDS = 1.5
+
+
+async def send_shift_report(message: types.Message, state: FSMContext, photo_ids: list):
     user = message.from_user
     now = get_moscow_time()
     data = await state.get_data()
 
-    earnings = data['earnings']
-    comment = data['comment']
-    photo_id = message.photo[-1].file_id
+    earnings = data.get('earnings')
+    comment = data.get('comment')
 
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -194,69 +217,129 @@ async def process_screenshot(message: types.Message, state: FSMContext):
         f"📝 Важная инфа: {comment}"
     )
 
-    await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_id, caption=text_admin, parse_mode="Markdown")
+    if len(photo_ids) == 1:
+        await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
+    else:
+        media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
+        media += [types.InputMediaPhoto(media=pid) for pid in photo_ids[1:]]
+        await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media)
+
     await message.answer("✅ Отчет успешно отправлен руководству! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
     await state.clear()
+
+
+async def _finalize_album(media_group_id: str):
+    await asyncio.sleep(ALBUM_WAIT_SECONDS)
+    buf = album_buffers.pop(media_group_id, None)
+    if not buf:
+        return  # альбом уже обработан другой задачей
+    await send_shift_report(buf["message"], buf["state"], buf["photos"])
+
+
+@dp.message(ShiftState.waiting_for_screenshot, F.photo)
+async def process_screenshot(message: types.Message, state: FSMContext):
+    photo_id = message.photo[-1].file_id
+    mgid = message.media_group_id
+
+    if mgid is None:
+        # Обычное одиночное фото — отправляем отчёт сразу
+        await send_shift_report(message, state, [photo_id])
+        return
+
+    # Фото — часть альбома: копим все фото этого альбома
+    if mgid not in album_buffers:
+        album_buffers[mgid] = {"photos": [], "message": message, "state": state}
+    album_buffers[mgid]["photos"].append(photo_id)
+    album_buffers[mgid]["message"] = message
+    asyncio.create_task(_finalize_album(mgid))
 
 
 @dp.message(ShiftState.waiting_for_screenshot)
 async def process_screenshot_wrong_content(message: types.Message, state: FSMContext):
     # Сюда попадают любые НЕ-фото сообщения в состоянии ожидания скриншота
     if is_menu_button(message.text):
-        await state.clear()
-        if message.text.startswith("🟢"):
-            await process_shift_start(message, state)
-        elif message.text.startswith("🔴"):
-            await process_shift_end_start(message, state)
-        elif message.text.startswith("📊"):
-            await process_statistics(message)
-        elif message.text.startswith("🧹"):
-            await process_clear_database_request(message)
+        await route_menu_button(message, state)
         return
 
     await message.answer("Пожалуйста, отправь именно фото (скриншот) продаж.")
 
 
-@dp.message(Command("add"))
-async def cmd_add_manual(message: types.Message):
-    """Ручное добавление уже случившегося заработка в статистику месяца.
-    Использование: /add Имя Сумма Комментарий
-    Пример: /add PlumBear 252.59 Активность хорошая"""
+# ---------- Добавление баланса вручную (кнопкой) ----------
+
+@dp.message(F.text.startswith("➕"))
+async def process_add_balance_start(message: types.Message, state: FSMContext):
     if message.from_user.id not in OWNER_IDS:
         await message.answer("🔴 У вас нет прав для этой команды.")
         return
+    await state.clear()
+    await message.answer("Введи имя чаттера, кому добавить баланс:")
+    await state.set_state(AddBalanceState.waiting_for_name)
 
-    parts = message.text.split(maxsplit=3)
-    if len(parts) < 3:
-        await message.answer(
-            "Использование:\n`/add Имя Сумма Комментарий`\n\nПример:\n`/add PlumBear 252.59 Активность хорошая`",
-            parse_mode="Markdown"
-        )
+
+@dp.message(AddBalanceState.waiting_for_name)
+async def process_add_balance_name(message: types.Message, state: FSMContext):
+    if is_menu_button(message.text):
+        await route_menu_button(message, state)
         return
+    await state.update_data(add_name=message.text)
+    await message.answer("Введи username чаттера без @ (или отправь «-», если username нет):")
+    await state.set_state(AddBalanceState.waiting_for_username)
 
-    _, name, amount_str = parts[0], parts[1], parts[2]
-    comment = parts[3] if len(parts) > 3 else ""
 
+@dp.message(AddBalanceState.waiting_for_username)
+async def process_add_balance_username(message: types.Message, state: FSMContext):
+    if is_menu_button(message.text):
+        await route_menu_button(message, state)
+        return
+    raw = message.text.strip().lstrip("@")
+    username = None if raw == "-" else raw
+    await state.update_data(add_username=username)
+    await message.answer("Введи сумму заработка (число, например 150 или 75.5):")
+    await state.set_state(AddBalanceState.waiting_for_amount)
+
+
+@dp.message(AddBalanceState.waiting_for_amount)
+async def process_add_balance_amount(message: types.Message, state: FSMContext):
+    if is_menu_button(message.text):
+        await route_menu_button(message, state)
+        return
     try:
-        earnings = float(amount_str.replace(",", "."))
-    except ValueError:
-        await message.answer(
-            "Сумма должна быть числом.\nПример: `/add PlumBear 252.59 комментарий`",
-            parse_mode="Markdown"
-        )
+        earnings = float(message.text.replace(",", "."))
+    except (ValueError, TypeError):
+        await message.answer("Пожалуйста, введи корректное число.")
         return
+    await state.update_data(add_amount=earnings)
+    await message.answer("Комментарий к этой записи (или отправь «-», если не нужен):")
+    await state.set_state(AddBalanceState.waiting_for_comment)
+
+
+@dp.message(AddBalanceState.waiting_for_comment)
+async def process_add_balance_comment(message: types.Message, state: FSMContext):
+    if is_menu_button(message.text):
+        await route_menu_button(message, state)
+        return
+
+    data = await state.get_data()
+    name = data['add_name']
+    username = data.get('add_username')
+    earnings = data['add_amount']
+    comment = "" if message.text.strip() == "-" else message.text
 
     now = get_moscow_time()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO shifts (user_id, username, full_name, action, timestamp, earnings, comment) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (0, None, name, "сдал", now.strftime("%Y-%m-%d %H:%M:%S"), earnings, comment)
+        (0, username, name, "сдал", now.strftime("%Y-%m-%d %H:%M:%S"), earnings, comment)
     )
     conn.commit()
     conn.close()
 
-    await message.answer(f"✅ Добавлено вручную: {name} — ${earnings:.2f}\n(попадёт в «Инфо за месяц»)")
+    await message.answer(
+        f"✅ Добавлено вручную: {name} — ${earnings:.2f}\n(попадёт в «Инфо за месяц»)",
+        reply_markup=get_main_keyboard(message.from_user.id)
+    )
+    await state.clear()
 
 
 @dp.message(F.text.in_({"📊 Инфо за month", "📊 Инфо за месяц"}))
