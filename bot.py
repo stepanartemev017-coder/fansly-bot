@@ -59,7 +59,6 @@ def get_main_keyboard(user_id: int):
         [types.KeyboardButton(text="🔴 Пост сдал")],
         [types.KeyboardButton(text="📊 Инфо за месяц")]
     ]
-    # Только для владельцев добавляем админские кнопки
     if user_id in OWNERS_IDS:
         buttons.append([types.KeyboardButton(text="👥 Участники")])
         buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
@@ -264,3 +263,4 @@ async def callback_confirm_clear(callback: types.CallbackQuery):
     await callback.message.edit_text("🧹 **База данных успешно очищена!** Все балансы за месяц и история смен сброшены до нуля.", parse_mode="Markdown")
     await callback.answer("База данных успешно очищена!")
 
+@dp.callback_query(F.data == "db_cancel_clear")
