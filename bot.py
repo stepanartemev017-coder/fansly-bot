@@ -14,8 +14,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 BOT_TOKEN = "8985257496:AAFg99so12mVX6jR3HwzsoG77A6kBEoF2nE"  # Кавычки оставляем
 ADMIN_GROUP_ID = -5136108392  # ID группы отчетов (без кавычек!)
 
-# ТЕПЕРЬ ТУТ СПИСОК ВЛАДЕЛЬЦЕВ. Вставьте ID через запятую внутри квадратных скобок []
-OWNERS_TELEGRAM_IDS = [8207913329, 963341281]  # Замените 1234567890 на ID второго овнера
+# Список ID владельцев. Замените 9876543210 на ID второго владельца!
+OWNERS_TELEGRAM_IDS = [8207913329, 963341281]
 # =======================================================
 
 bot = Bot(token=BOT_TOKEN)
@@ -56,13 +56,11 @@ class ShiftState(StatesGroup):
 
 # Главная клавиатура
 def get_main_keyboard(user_id: int):
-    # Кнопки, которые видят ВСЕ пользователи (включая новую вкладку Участники)
     buttons = [
         [types.KeyboardButton(text="🟢 Пост принял")],
         [types.KeyboardButton(text="🔴 Пост сдал")],
         [types.KeyboardButton(text="📊 Инфо за месяц"), types.KeyboardButton(text="📋 Участники")]
     ]
-    # Если зашел один из овнеров, ему добавляется кнопка очистки
     if user_id in OWNERS_TELEGRAM_IDS:
         buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
         
@@ -217,13 +215,12 @@ async def process_statistics(message: types.Message):
     await message.answer(response, parse_mode="Markdown")
 
 
-# --- НОВАЯ ВКЛАДКА: СПИСОК УЧАСТНИКОВ (ВИДЯТ ВСЕ) ---
+# Вкладка списка участников
 @dp.message(F.text == "📋 Участники")
 async def process_show_members(message: types.Message):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Достаем уникальных пользователей, которые хотя бы раз нажимали "принял" или "сдал"
     cursor.execute('''
         SELECT DISTINCT full_name, username 
         FROM shifts 
@@ -246,7 +243,6 @@ async def process_show_members(message: types.Message):
 
 @dp.message(F.text == "🧹 Очистить месяц")
 async def process_clear_database_request(message: types.Message):
-    # Проверка: входит ли ID пользователя в список разрешенных овнеров
     if message.from_user.id not in OWNERS_TELEGRAM_IDS:
         await message.answer("🛑 У вас нет прав для выполнения этой команды.")
         return
@@ -261,7 +257,6 @@ async def process_clear_database_request(message: types.Message):
 
 @dp.callback_query(F.data == "db_confirm_clear")
 async def callback_confirm_clear(callback: types.CallbackQuery):
-    # Повторная проверка безопасности для инлайн-кнопки
     if callback.from_user.id not in OWNERS_TELEGRAM_IDS:
         await callback.answer("🛑 Отказано в доступе.", show_alert=True)
         return
@@ -272,3 +267,10 @@ async def callback_confirm_clear(callback: types.CallbackQuery):
     conn.commit()
     conn.close()
     
+    await callback.message.edit_text("🧹 **База данных успешно очищена!** Все балансы за месяц и история смен сброшены до нуля.", parse_mode="Markdown")
+    await callback.answer("База данных успешно очищена!")
+
+
+@dp.callback_query(F.data == "db_cancel_clear")
+async def callback_cancel_clear(callback: types.CallbackQuery):
+    await callback.message.edit_text("❌ Очистка базы данных отменена. Данные чаттеров в безопасности.")
