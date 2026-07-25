@@ -9,8 +9,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.media_group import MediaGroupBuilder
 
-# Конфигурация
-BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNxJ1nQM5Rkag"
+# Данные конфигурации
+BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNXJ1nQM5Rkag"
 ADMIN_GROUP_ID = -5136108392
 OWNER_TELEGRAM_ID = 963341281
 DB_NAME = "reports.db"
@@ -18,7 +18,7 @@ DB_NAME = "reports.db"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Временное хранилище для медиагрупп
+# Временный склад для скриншотов из альбома
 media_storage = {}
 
 class ShiftState(StatesGroup):
@@ -65,7 +65,7 @@ def get_confirm_keyboard():
     ]
     return types.InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ИСПРАВЛЕНИЕ 1: Сброс зависшего состояния при нажатии кнопок меню
+# ИСПРАВЛЕНИЕ 1: Сброс зависания, если нажали кнопку меню посреди опроса
 @dp.message(F.text.in_({"🟢 Пост принял", "🔴 Пост сдал", "📊 Инфо за месяц", "🧹 Очистить месяц"}))
 async def handle_menu_interrupt(message: types.Message, state: FSMContext):
     await state.clear()
@@ -122,7 +122,7 @@ async def process_info(message: types.Message, state: FSMContext):
     await message.answer("Отправь скриншот(ы) продаж:")
     await state.set_state(ShiftState.waiting_for_screenshot)
 
-# ИСПРАВЛЕНИЕ 2: Сбор нескольких скриншотов в один отчет-альбом
+# ИСПРАВЛЕНИЕ 2: Обработка нескольких скриншотов альбомом без спама
 @dp.message(ShiftState.waiting_for_screenshot, F.photo)
 async def process_screenshot(message: types.Message, state: FSMContext):
     user = message.from_user
@@ -133,7 +133,9 @@ async def process_screenshot(message: types.Message, state: FSMContext):
         if media_group_id not in media_storage:
             media_storage[media_group_id] = []
         media_storage[media_group_id].append(photo_id)
+        
         await asyncio.sleep(0.6)
+        
         if media_group_id not in media_storage:
             return
         all_photos = media_storage.pop(media_group_id)
@@ -252,4 +254,3 @@ async def callback_cancel_clear(callback: types.CallbackQuery):
 async def main():
     init_db()
     print("Бот успешно запущен на московском времени (период: месяц)...")
-    await bot.delete_webhook(drop_pending_updates=True)
