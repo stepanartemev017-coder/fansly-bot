@@ -10,7 +10,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.media_group import MediaGroupBuilder
 from typing import Any, Awaitable, Callable, Dict, List
 
-# Данные конфигурации
 BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNXJ1nQM5Rkag"
 ADMIN_GROUP_ID = -5136108392
 OWNER_TELEGRAM_ID = 963341281
@@ -24,7 +23,6 @@ class ShiftState(StatesGroup):
     waiting_for_info = State()
     waiting_for_screenshot = State()
 
-# НАДЕЖНЫЙ МИДЛВАРЬ ДЛЯ СБОРКИ АЛЬБОМОВ БЕЗ ЗАВИСАНИЯ БОТА
 class AlbumMiddleware(BaseMiddleware):
     def __init__(self, latency: float = 0.6):
         self.latency = latency
@@ -51,7 +49,6 @@ class AlbumMiddleware(BaseMiddleware):
             self.storage[mid].append(event)
             return
 
-# Регистрируем сборщик альбомов в диспетчере
 dp.message.middleware(AlbumMiddleware())
 
 async def get_moscow_time():
@@ -126,7 +123,6 @@ async def process_shift_end_start(message: types.Message, state: FSMContext):
     await message.answer("Сколько ты заработал на смене (введи только число, например: 150 или 75.50)?")
     await state.set_state(ShiftState.waiting_for_earnings)
 
-# ИСПРАВЛЕНИЕ 1: Сброс зависания, если вместо цифр нажали кнопку меню
 @dp.message(ShiftState.waiting_for_earnings)
 async def process_earnings(message: types.Message, state: FSMContext):
     if message.text == "🟢 Пост принял":
@@ -164,7 +160,6 @@ async def process_info(message: types.Message, state: FSMContext):
     await message.answer("Отправь скриншот(ы) продаж:")
     await state.set_state(ShiftState.waiting_for_screenshot)
 
-# ИСПРАВЛЕНИЕ 2: Чистая склейка альбома без конфликтов памяти и бесконечных пауз
 @dp.message(ShiftState.waiting_for_screenshot, F.photo)
 async def process_screenshot(message: types.Message, state: FSMContext, album: List[types.Message] = None):
     user = message.from_user
@@ -190,7 +185,6 @@ async def process_screenshot(message: types.Message, state: FSMContext, album: L
         f"📝 Важная инфа: {comment}"
     )
     
-    # Если пришел альбом (несколько фоток), высылаем одной пачкой
     if album and len(album) > 1:
         media_group = MediaGroupBuilder(caption=text_admin, parse_mode="Markdown")
         for msg in album:
@@ -198,7 +192,6 @@ async def process_screenshot(message: types.Message, state: FSMContext, album: L
                 media_group.add_photo(media=msg.photo[-1].file_id)
         await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media_group.build())
     else:
-        # Если прислали всего 1 скриншот
         photo_id = message.photo[-1].file_id
         await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_id, caption=text_admin, parse_mode="Markdown")
         
@@ -261,7 +254,7 @@ async def process_clear_database_request(message: types.Message, state: FSMConte
     if message.from_user.id != OWNER_TELEGRAM_ID:
         await message.answer("🛑 У вас нет прав для выполнения этой команды.")
         return
-    await message.answer(
+            await message.answer(
         "⚠️ **ВНИМАНИЕ!** Вы собираетесь полностью очистить базу данных за месяц.\nВсе балансы сотрудников и история смен будут безвозвратно удалены. Вы уверены?",
         reply_markup=get_confirm_keyboard(),
         parse_mode="Markdown"
@@ -295,3 +288,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
