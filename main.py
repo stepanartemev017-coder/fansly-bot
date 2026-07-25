@@ -255,3 +255,43 @@ async def process_statistics(message: types.Message, state: FSMContext = None):
     await message.answer(response, parse_mode="Markdown")
 
 @dp.message(F.text == "🧹 Очистить месяц")
+async def process_clear_database_request(message: types.Message, state: FSMContext = None):
+    if state:
+        await state.clear()
+    if message.from_user.id != OWNER_TELEGRAM_ID:
+        await message.answer("🛑 У вас нет прав для выполнения этой команды.")
+        return
+    await message.answer(
+        "⚠️ **ВНИМАНИЕ!** Вы собираетесь полностью очистить базу данных за месяц.\nВсе балансы сотрудников и история смен будут безвозвратно удалены. Вы уверены?",
+        reply_markup=get_confirm_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data == "db_confirm_clear")
+async def callback_confirm_clear(callback: types.CallbackQuery):
+    if callback.from_user.id != OWNER_TELEGRAM_ID:
+        await callback.answer("🛑 Отказано в доступе.", show_alert=True)
+        return
+        
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM shifts")
+    conn.commit()
+    conn.close()
+    
+    await callback.message.edit_text("🧹 **База данных успешно очищена!** Все балансы сотрудников и история смен были удалены.", parse_mode="Markdown")
+    await callback.answer()
+
+@dp.callback_query(F.data == "db_cancel_clear")
+async def callback_cancel_clear(callback: types.CallbackQuery):
+    await callback.message.edit_text("❌ Очистка базы данных отменена. Данные чаттеров остались в безопасности.", parse_mode="Markdown")
+    await callback.answer()
+
+async def main():
+    init_db()
+    print("Бот успешно запущен на московском времени (период: месяц)...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    asyncio.run(main())
