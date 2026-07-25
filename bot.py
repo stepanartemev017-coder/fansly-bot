@@ -12,7 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ========================================================
 BOT_TOKEN = "8985257496:AAFg99so12mVX6jR3HwzsoG77A6kBEoF2nE"
 ADMIN_GROUP_ID = -5136108392
-OWNERS_IDS = [8207913329, 963341281]  # Два ваших ID
+OWNERS_IDS = [8207913329, 963341281]
 # ========================================================
 
 bot = Bot(token=BOT_TOKEN)
@@ -57,7 +57,7 @@ def get_main_keyboard(user_id: int):
     buttons = [
         [types.KeyboardButton(text="🟢 Пост принял")],
         [types.KeyboardButton(text="🔴 Пост сдал")],
-        [types.KeyboardButton(text="📊 Инфо за month") or types.KeyboardButton(text="📊 Инфо за месяц")]
+        [types.KeyboardButton(text="📊 Инфо за месяц")]
     ]
     # Только для владельцев добавляем админские кнопки
     if user_id in OWNERS_IDS:
@@ -164,7 +164,7 @@ async def process_screenshot(message: types.Message, state: FSMContext):
     await message.answer("✅ Отчет успешно отправлен руководством! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
     await state.clear()
 
-@dp.message(lambda msg: msg.text in ["📊 Инфо за month", "📊 Инфо за месяц"])
+@dp.message(lambda msg: msg.text == "📊 Инфо за месяц")
 async def process_statistics(message: types.Message):
     one_month_ago = get_moscow_time() - timedelta(days=30)
     one_month_ago_str = one_month_ago.strftime("%Y-%m-%d %H:%M:%S")
@@ -262,3 +262,5 @@ async def callback_confirm_clear(callback: types.CallbackQuery):
     conn.close()
     
     await callback.message.edit_text("🧹 **База данных успешно очищена!** Все балансы за месяц и история смен сброшены до нуля.", parse_mode="Markdown")
+    await callback.answer("База данных успешно очищена!")
+
