@@ -22,7 +22,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # =======================================================
 BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNxJ1nQM5Rkag"
 ADMIN_GROUP_ID = -5136108392
-OWNERS_TELEGRAM_IDS = [963341281, 8207913329]
+OWNERS_TELEGRAM_IDS = 8207913329
 # =======================================================
 
 bot = Bot(token=BOT_TOKEN)
