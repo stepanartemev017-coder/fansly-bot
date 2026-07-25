@@ -2,12 +2,13 @@ import os
 import sqlite3
 import asyncio
 from datetime import datetime, timedelta, timezone
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.media_group import MediaGroupBuilder
+from typing import Any, Awaitable, Callable, Dict, List
 
 # Данные конфигурации
 BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNXJ1nQM5Rkag"
@@ -18,13 +19,40 @@ DB_NAME = "reports.db"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Временный склад для скриншотов из альбома
-media_storage = {}
-
 class ShiftState(StatesGroup):
     waiting_for_earnings = State()
     waiting_for_info = State()
     waiting_for_screenshot = State()
+
+# НАДЕЖНЫЙ МИДЛВАРЬ ДЛЯ СБОРКИ АЛЬБОМОВ БЕЗ ЗАВИСАНИЯ БОТА
+class AlbumMiddleware(BaseMiddleware):
+    def __init__(self, latency: float = 0.6):
+        self.latency = latency
+        self.storage = {}
+        super().__init__()
+
+    async def __call__(
+        self,
+        handler: Callable[[types.Message, Dict[str, Any]], Awaitable[Any]],
+        event: types.Message,
+        data: Dict[str, Any]
+    ) -> Any:
+        if not event.media_group_id:
+            data["album"] = [event]
+            return await handler(event, data)
+
+        mid = event.media_group_id
+        if mid not in self.storage:
+            self.storage[mid] = [event]
+            await asyncio.sleep(self.latency)
+            data["album"] = self.storage.pop(mid)
+            return await handler(event, data)
+        else:
+            self.storage[mid].append(event)
+            return
+
+# Регистрируем сборщик альбомов в диспетчере
+dp.message.middleware(AlbumMiddleware())
 
 async def get_moscow_time():
     tz_moscow = timezone(timedelta(hours=3))
@@ -98,10 +126,9 @@ async def process_shift_end_start(message: types.Message, state: FSMContext):
     await message.answer("Сколько ты заработал на смене (введи только число, например: 150 или 75.50)?")
     await state.set_state(ShiftState.waiting_for_earnings)
 
-# ИСПРАВЛЕНИЕ 1: Бот больше не зависает, если вместо цифр нажали кнопку меню
+# ИСПРАВЛЕНИЕ 1: Сброс зависания, если вместо цифр нажали кнопку меню
 @dp.message(ShiftState.waiting_for_earnings)
 async def process_earnings(message: types.Message, state: FSMContext):
-    # Если человек нажал другую кнопку из меню во время ввода бабок — сбрасываем и переключаем
     if message.text == "🟢 Пост принял":
         await process_shift_start(message, state)
         return
@@ -125,7 +152,6 @@ async def process_earnings(message: types.Message, state: FSMContext):
 
 @dp.message(ShiftState.waiting_for_info)
 async def process_info(message: types.Message, state: FSMContext):
-    # Защита от случайного нажатия кнопок на этапе комментария
     if message.text in ["🟢 Пост принял", "🔴 Пост сдал", "📊 Инфо за месяц", "🧹 Очистить месяц"]:
         await state.clear()
         if message.text == "🟢 Пост принял": await process_shift_start(message, state)
@@ -138,26 +164,10 @@ async def process_info(message: types.Message, state: FSMContext):
     await message.answer("Отправь скриншот(ы) продаж:")
     await state.set_state(ShiftState.waiting_for_screenshot)
 
-# ИСПРАВЛЕНИЕ 2: Сбор нескольких скриншотов альбомом без спама в группу
+# ИСПРАВЛЕНИЕ 2: Чистая склейка альбома без конфликтов памяти и бесконечных пауз
 @dp.message(ShiftState.waiting_for_screenshot, F.photo)
-async def process_screenshot(message: types.Message, state: FSMContext):
+async def process_screenshot(message: types.Message, state: FSMContext, album: List[types.Message] = None):
     user = message.from_user
-    photo_id = message.photo[-1].file_id
-    media_group_id = message.media_group_id
-    
-    if media_group_id:
-        if media_group_id not in media_storage:
-            media_storage[media_group_id] = []
-        media_storage[media_group_id].append(photo_id)
-        
-        await asyncio.sleep(0.6)
-        
-        if media_group_id not in media_storage:
-            return
-        all_photos = media_storage.pop(media_group_id)
-    else:
-        all_photos = [photo_id]
-
     now = await get_moscow_time()
     data = await state.get_data()
     earnings = data['earnings']
@@ -180,13 +190,17 @@ async def process_screenshot(message: types.Message, state: FSMContext):
         f"📝 Важная инфа: {comment}"
     )
     
-    if len(all_photos) == 1:
-        await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=all_photos, caption=text_admin, parse_mode="Markdown")
-    else:
+    # Если пришел альбом (несколько фоток), высылаем одной пачкой
+    if album and len(album) > 1:
         media_group = MediaGroupBuilder(caption=text_admin, parse_mode="Markdown")
-        for p_id in all_photos:
-            media_group.add_photo(media=p_id)
+        for msg in album:
+            if msg.photo:
+                media_group.add_photo(media=msg.photo[-1].file_id)
         await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media_group.build())
+    else:
+        # Если прислали всего 1 скриншот
+        photo_id = message.photo[-1].file_id
+        await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_id, caption=text_admin, parse_mode="Markdown")
         
     await message.answer("✅ Отчет успешно отправлен руководство! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
     await state.clear()
@@ -241,15 +255,3 @@ async def process_statistics(message: types.Message, state: FSMContext = None):
     await message.answer(response, parse_mode="Markdown")
 
 @dp.message(F.text == "🧹 Очистить месяц")
-async def process_clear_database_request(message: types.Message, state: FSMContext = None):
-    if state:
-        await state.clear()
-    if message.from_user.id != OWNER_TELEGRAM_ID:
-        await message.answer("🛑 У вас нет прав для выполнения этой команды.")
-        return
-    await message.answer(
-        "⚠️ **ВНИМАНИЕ!** Вы собираетесь полностью очистить базу данных за месяц.\nВсе балансы сотрудников и история смен будут безвозвратно удалены. Вы уверены?",
-        reply_markup=get_confirm_keyboard(),
-        parse_mode="Markdown"
-    )
-
