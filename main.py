@@ -12,7 +12,7 @@ from aiogram.utils.media_group import MediaGroupBuilder
 # =====================================================================
 # НАСТРОЙКИ: Замените значения на свои данные
 # =====================================================================
-BOT_TOKEN = "8985257496:AAHeUUzkZQ8nrj3s5Zy5o4UNXJ1nQM5RKag"
+BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNxJ1nQM5Rkag"
 ADMIN_GROUP_ID = -5136108392
 OWNER_TELEGRAM_ID = 963341281
 DB_NAME = "reports.db"
