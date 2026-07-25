@@ -65,27 +65,17 @@ def get_confirm_keyboard():
     ]
     return types.InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ИСПРАВЛЕНИЕ 1: Сброс зависания, если нажали кнопку меню посреди опроса
-@dp.message(F.text.in_({"🟢 Пост принял", "🔴 Пост сдал", "📊 Инфо за месяц", "🧹 Очистить месяц"}))
-async def handle_menu_interrupt(message: types.Message, state: FSMContext):
-    await state.clear()
-    if message.text == "🟢 Пост принял":
-        await process_shift_start(message)
-    elif message.text == "🔴 Пост сдал":
-        await process_shift_end_start(message, state)
-    elif message.text == "📊 Инфо за месяц":
-        await process_statistics(message)
-    elif message.text == "🧹 Очистить месяц":
-        await process_clear_database_request(message)
-
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer(
         f"Привет, {message.from_user.full_name}! Я бот для отчетов Fansly (Время: МСК).\nИспользуй кнопки ниже для управления сменой.",
         reply_markup=get_main_keyboard(message.from_user.id)
     )
 
-async def process_shift_start(message: types.Message):
+@dp.message(F.text == "🟢 Пост принял")
+async def process_shift_start(message: types.Message, state: FSMContext):
+    await state.clear()
     user = message.from_user
     now = await get_moscow_time()
     
@@ -102,12 +92,29 @@ async def process_shift_start(message: types.Message):
     await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
     await message.answer("✅ Вход на смену зафиксирован! Удачной работы.")
 
+@dp.message(F.text == "🔴 Пост сдал")
 async def process_shift_end_start(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer("Сколько ты заработал на смене (введи только число, например: 150 или 75.50)?")
     await state.set_state(ShiftState.waiting_for_earnings)
 
+# ИСПРАВЛЕНИЕ 1: Бот больше не зависает, если вместо цифр нажали кнопку меню
 @dp.message(ShiftState.waiting_for_earnings)
 async def process_earnings(message: types.Message, state: FSMContext):
+    # Если человек нажал другую кнопку из меню во время ввода бабок — сбрасываем и переключаем
+    if message.text == "🟢 Пост принял":
+        await process_shift_start(message, state)
+        return
+    elif message.text == "📊 Инфо за месяц":
+        await process_statistics(message, state)
+        return
+    elif message.text == "🧹 Очистить месяц":
+        await process_clear_database_request(message, state)
+        return
+    elif message.text == "🔴 Пост сдал":
+        await process_shift_end_start(message, state)
+        return
+
     try:
         earnings = float(message.text.replace(",", "."))
         await state.update_data(earnings=earnings)
@@ -118,11 +125,20 @@ async def process_earnings(message: types.Message, state: FSMContext):
 
 @dp.message(ShiftState.waiting_for_info)
 async def process_info(message: types.Message, state: FSMContext):
+    # Защита от случайного нажатия кнопок на этапе комментария
+    if message.text in ["🟢 Пост принял", "🔴 Пост сдал", "📊 Инфо за месяц", "🧹 Очистить месяц"]:
+        await state.clear()
+        if message.text == "🟢 Пост принял": await process_shift_start(message, state)
+        elif message.text == "🔴 Пост сдал": await process_shift_end_start(message, state)
+        elif message.text == "📊 Инфо за месяц": await process_statistics(message, state)
+        elif message.text == "🧹 Очистить месяц": await process_clear_database_request(message, state)
+        return
+
     await state.update_data(comment=message.text)
     await message.answer("Отправь скриншот(ы) продаж:")
     await state.set_state(ShiftState.waiting_for_screenshot)
 
-# ИСПРАВЛЕНИЕ 2: Обработка нескольких скриншотов альбомом без спама
+# ИСПРАВЛЕНИЕ 2: Сбор нескольких скриншотов альбомом без спама в группу
 @dp.message(ShiftState.waiting_for_screenshot, F.photo)
 async def process_screenshot(message: types.Message, state: FSMContext):
     user = message.from_user
@@ -165,7 +181,7 @@ async def process_screenshot(message: types.Message, state: FSMContext):
     )
     
     if len(all_photos) == 1:
-        await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=all_photos[0], caption=text_admin, parse_mode="Markdown")
+        await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=all_photos, caption=text_admin, parse_mode="Markdown")
     else:
         media_group = MediaGroupBuilder(caption=text_admin, parse_mode="Markdown")
         for p_id in all_photos:
@@ -175,7 +191,10 @@ async def process_screenshot(message: types.Message, state: FSMContext):
     await message.answer("✅ Отчет успешно отправлен руководство! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
     await state.clear()
 
-async def process_statistics(message: types.Message):
+@dp.message(F.text == "📊 Инфо за месяц")
+async def process_statistics(message: types.Message, state: FSMContext = None):
+    if state:
+        await state.clear()
     now = await get_moscow_time()
     one_month_ago = now - timedelta(days=30)
     one_month_ago_str = one_month_ago.strftime("%Y-%m-%d %H:%M:%S")
@@ -221,7 +240,10 @@ async def process_statistics(message: types.Message):
                 
     await message.answer(response, parse_mode="Markdown")
 
-async def process_clear_database_request(message: types.Message):
+@dp.message(F.text == "🧹 Очистить месяц")
+async def process_clear_database_request(message: types.Message, state: FSMContext = None):
+    if state:
+        await state.clear()
     if message.from_user.id != OWNER_TELEGRAM_ID:
         await message.answer("🛑 У вас нет прав для выполнения этой команды.")
         return
@@ -231,26 +253,3 @@ async def process_clear_database_request(message: types.Message):
         parse_mode="Markdown"
     )
 
-@dp.callback_query(F.data == "db_confirm_clear")
-async def callback_confirm_clear(callback: types.CallbackQuery):
-    if callback.from_user.id != OWNER_TELEGRAM_ID:
-        await callback.answer("🛑 Отказано в доступе.", show_alert=True)
-        return
-        
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM shifts")
-    conn.commit()
-    conn.close()
-    
-    await callback.message.edit_text("🧹 **База данных успешно очищена!** Все балансы сотрудников и история смен были удалены.", parse_mode="Markdown")
-    await callback.answer()
-
-@dp.callback_query(F.data == "db_cancel_clear")
-async def callback_cancel_clear(callback: types.CallbackQuery):
-    await callback.message.edit_text("❌ Очистка базы данных отменена. Данные чаттеров остались в безопасности.", parse_mode="Markdown")
-    await callback.answer()
-
-async def main():
-    init_db()
-    print("Бот успешно запущен на московском времени (период: месяц)...")
