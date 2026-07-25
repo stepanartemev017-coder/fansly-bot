@@ -10,32 +10,32 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.media_group import MediaGroupBuilder
 
 # =====================================================================
-# НАСТРОЙКИ: Замените значения на свои данные
+# НАСТРОЙКИ: Основные конфигурационные переменные
 # =====================================================================
-BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNxJ1nQM5Rkag"
+BOT_TOKEN = "8985257496:AAHeUUzkZQ8nrj3s5Zy5o4UNXJ1nQM5RKag"
 ADMIN_GROUP_ID = -5136108392
 OWNER_TELEGRAM_ID = 963341281
 DB_NAME = "reports.db"
 
-# Инициализация бота и диспетчера
+# Инициализация ядра бота и диспетчера задач
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Временное хранилище для альбомов со скриншотами
+# Временная оперативная память для склейки альбомов с картинками
 media_storage = {}
 
-# Класс состояний FSM
+# Определение конечного автомата (FSM)
 class ShiftState(StatesGroup):
     waiting_for_earnings = State()
     waiting_for_info = State()
     waiting_for_screenshot = State()
 
-# Функция получения текущего времени по Москве (UTC+3)
+# Синхронизация времени по часовому поясу Москвы (UTC+3)
 async def get_moscow_time():
     tz_moscow = timezone(timedelta(hours=3))
     return datetime.now(tz_moscow)
 
-# Инициализация базы данных
+# Создание локальной базы данных SQLite3
 def init_db():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -53,7 +53,7 @@ def init_db():
         ''')
         conn.commit()
 
-# Главная клавиатура
+# Главное меню пользователя
 def get_main_keyboard(user_id: int):
     buttons = [
         [types.KeyboardButton(text="🟢 Пост принял"), types.KeyboardButton(text="🔴 Пост сдал")],
@@ -64,7 +64,7 @@ def get_main_keyboard(user_id: int):
         
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-# Inline-клавиатура для подтверждения очистки
+# Диалоговое инлайн-меню подтверждения очистки БД
 def get_confirm_keyboard():
     buttons = [
         [
@@ -75,17 +75,17 @@ def get_confirm_keyboard():
     return types.InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # =====================================================================
-# ХЭНДЛЕРЫ И ЛОГИКА БОТА
+# ОБРАБОТЧИКИ СОБЫТИЙ И ХЭНДЛЕРЫ
 # =====================================================================
 
-# 1. Защита от зависания FSM (Сброс состояний при нажатии главных кнопок)
+# 1. Сброс зависших состояний (Перехватчик системных кнопок главного меню)
 @dp.message(F.text.in_({"🟢 Пост принял", "🔴 Пост сдал", "📊 Инфо за месяц", "📊 Инфо за month", "🧹 Очистить месяц"}))
 async def handle_menu_buttons_interrupt(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state is not None:
-        await state.clear()  # Аннулируем старый зависший ввод данных
+        await state.clear()  # Полностью сбрасываем старый опрос, если он не завершен
     
-    # Перенаправляем выполнение на нужный хэндлер
+    # Распределяем выполнение по целевым хэндлерам
     if message.text == "🟢 Пост принял":
         await process_shift_start(message)
     elif message.text == "🔴 Пост сдал":
@@ -95,7 +95,7 @@ async def handle_menu_buttons_interrupt(message: types.Message, state: FSMContex
     elif message.text == "🧹 Очистить месяц":
         await process_clear_database_request(message)
 
-# Старт бота
+# Обработка приветственной команды /start
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -104,7 +104,7 @@ async def cmd_start(message: types.Message):
         reply_markup=get_main_keyboard(message.from_user.id)
     )
 
-# Пост принял
+# Обработка открытия рабочей смены
 async def process_shift_start(message: types.Message):
     user = message.from_user
     now = await get_moscow_time()
@@ -124,12 +124,12 @@ async def process_shift_start(message: types.Message):
     await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="HTML")
     await message.answer("✅ Вход на смену зафиксирован! Удачной работы.")
 
-# Пост сдал (Начало опроса FSM)
+# Начало процесса закрытия рабочей смены (FSM Шаг 1)
 async def process_shift_end_start(message: types.Message, state: FSMContext):
     await message.answer("Сколько ты заработал на смене (введи только число, например: 150 или 75.50)?")
     await state.set_state(ShiftState.waiting_for_earnings)
 
-# FSM: Получение заработка
+# Валидация и фиксация суммы заработка (FSM Шаг 2)
 @dp.message(ShiftState.waiting_for_earnings)
 async def process_earnings(message: types.Message, state: FSMContext):
     try:
@@ -142,27 +142,27 @@ async def process_earnings(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("Пожалуйста, введи корректное число (заработок). Пример: 120.50")
 
-# FSM: Получение комментария
+# Получение текстового комментария к смене (FSM Шаг 3)
 @dp.message(ShiftState.waiting_for_info)
 async def process_info(message: types.Message, state: FSMContext):
     await state.update_data(comment=message.text)
     await message.answer("Отправь скриншот(ы) продаж:")
     await state.set_state(ShiftState.waiting_for_screenshot)
 
-# FSM: Финал. Получение скриншотов (Одиночные + Альбомы)
+# Прием графических файлов, группировка в альбомы и закрытие смены (FSM Шаг 4)
 @dp.message(ShiftState.waiting_for_screenshot, F.photo)
 async def process_screenshot(message: types.Message, state: FSMContext):
     user = message.from_user
     photo_id = message.photo[-1].file_id
     media_group_id = message.media_group_id
     
-    # Логика сборщика картинок, отправленных альбомом
+    # Логика буферизации пачки изображений
     if media_group_id:
         if media_group_id not in media_storage:
             media_storage[media_group_id] = []
         media_storage[media_group_id].append(photo_id)
         
-        # Микропауза для склейки всех входящих потоков картинок от Telegram
+        # Задержка для полного получения медиа-пакета сервером
         await asyncio.sleep(0.6)
         
         if media_group_id not in media_storage:
@@ -171,7 +171,7 @@ async def process_screenshot(message: types.Message, state: FSMContext):
     else:
         all_photos = [photo_id]
 
-    # --- ЕДИНОКРАТНАЯ ЗАПИСЬ В БД И ОТПРАВКА ОТЧЕТА ---
+    # Фиксация итоговых данных в базе одной транзакцией
     now = await get_moscow_time()
     formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
     
@@ -196,7 +196,7 @@ async def process_screenshot(message: types.Message, state: FSMContext):
         f"📝 Важная инфа: {comment}"
     )
     
-    # Отправка контента руководству
+    # Безопасное разделение отправки медиа-сообщений
     if len(all_photos) == 1:
         await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=all_photos[0], caption=text_admin, parse_mode="HTML")
     else:
@@ -208,7 +208,7 @@ async def process_screenshot(message: types.Message, state: FSMContext):
     await message.answer("✅ Отчет успешно отправлен руководству! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
     await state.clear()
 
-# Вывод статистики за месяц
+# Формирование и выдача логов и сводной статистики
 async def process_statistics(message: types.Message):
     now = await get_moscow_time()
     one_month_ago = now - timedelta(days=30)
@@ -217,7 +217,7 @@ async def process_statistics(message: types.Message):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         
-        # Сводный баланс
+        # Получение суммарных финансовых показателей по чаттерам
         cursor.execute('''
             SELECT full_name, username, SUM(earnings) 
             FROM shifts 
@@ -226,7 +226,7 @@ async def process_statistics(message: types.Message):
         ''', (one_month_ago_str,))
         balances = cursor.fetchall()
         
-        # История логов (20 последних действий)
+        # Запрос 20 крайних логов активности
         cursor.execute('''
             SELECT full_name, action, timestamp, earnings 
             FROM shifts 
@@ -244,12 +244,3 @@ async def process_statistics(message: types.Message):
     else:
         for name, username, total in balances:
             user_link = f"@{username}" if username else "нет юзернейма"
-            response += f"• {name} ({user_link}): <b>${total:.2f}</b>\n"
-            
-    response += "\n<b>🕒 Последние действия на сменах:</b>\n"
-    if not recent_actions:
-        response += "История пуста.\n"
-    else:
-        for name, action, dt_str, earn in recent_actions:
-            try:
-                dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
