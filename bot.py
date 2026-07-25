@@ -12,8 +12,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ========================================================
 BOT_TOKEN = "8985257496:AAFg99so12mVX6jR3HwzsoG77A6kBEoF2nE"  # Кавычки оставляем
 ADMIN_GROUP_ID = -5136108392  # ID группы отчетов (без кавычек!)
-OWNER_TELEGRAM_ID = 963341281  # ВСТАВЬТЕ СЮДА ВАШ ЛИЧНЫЙ ID ИЗ @myidbot (число без кавычек)
 SECRET_CODE = "315699"  # СЕКРЕТНОЕ СЛОВО ДЛЯ ЧАТТЕРОВ
+
+# СЮДА ЧЕРЕЗ ЗАПЯТУЮ ВПИШИТЕ ДВА ID ВЛАДЕЛЬЦЕВ (числа без кавычек)
+OWNERS_IDS = [8207913329, 963341281]  
 # ========================================================
 
 bot = Bot(token=BOT_TOKEN)
@@ -58,12 +60,14 @@ def init_db():
     conn.close()
 
 def is_user_allowed(user_id: int):
+    if user_id in OWNERS_IDS:
+        return True
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
     user = cursor.fetchone()
     conn.close()
-    return user is not None or user_id == OWNER_TELEGRAM_ID
+    return user is not None
 
 def get_main_keyboard(user_id: int):
     buttons = [
@@ -71,8 +75,7 @@ def get_main_keyboard(user_id: int):
         [types.KeyboardButton(text="🔴 Пост сдал")],
         [types.KeyboardButton(text="📊 Инфо за месяц")]
     ]
-    # Только для владельца добавляем кнопки управления
-    if user_id == OWNER_TELEGRAM_ID:
+    if user_id in OWNERS_IDS:
         buttons.append([types.KeyboardButton(text="👥 Участники")])
         buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
         
@@ -106,7 +109,6 @@ async def process_auth_code(message: types.Message, state: FSMContext):
         user = message.from_user
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        # Сохраняем ID, юзернейм и имя чаттера для списка участников
         cursor.execute(
             "INSERT OR IGNORE INTO users (user_id, username, full_name) VALUES (?, ?, ?)", 
             (user.id, user.username, user.full_name)
@@ -251,10 +253,13 @@ async def process_statistics(message: types.Message):
             
     await message.answer(response, parse_mode="Markdown")
 
-# --- ВКУЛАДКА СПИСКА УЧАСТНИКОВ (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА) ---
 @dp.message(F.text == "👥 Участники")
 async def process_view_users(message: types.Message):
-    if message.from_user.id != OWNER_TELEGRAM_ID:
+    if message.from_user.id not in OWNERS_IDS:
         await message.answer("⛔ У вас нет прав для выполнения этой команды.")
         return
         
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, full_name FROM users")
+    all_users = cursor.fetchall()
