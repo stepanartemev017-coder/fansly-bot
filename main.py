@@ -1,12 +1,3 @@
-import sys
-import subprocess
-
-# Автоматически доустановим aiogram, если хостинг его проигнорировал
-try:
-    import aiogram
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "aiogram==3.13.1"])
-
 import os
 import sqlite3
 import asyncio
@@ -17,22 +8,24 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# ==============================================================================
-# НАСТРОЙКИ: Ваши данные
-# ==============================================================================
-BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNxJ1nQM5Rkag"
-ADMIN_GROUP_ID = -5136108392
-# Обернули в квадратные скобки [], чтобы сделать списком
-OWNERS_TELEGRAM_IDS = [8207913329] 
-# ==============================================================================
+# =======================================================
+# НАСТРОЙКИ: Замените значения на свои данные
+# =======================================================
+BOT_TOKEN = "8985257496:AAFg99so12mVX6jR3HwzsoG77A6kBEoF2nE"  # Кавычки оставляем
+ADMIN_GROUP_ID = -5136108392  # ID группы отчетов (без кавычек!)
+OWNER_TELEGRAM_ID = 963341281  # ВСТАВЬТЕ СЮДА ВАШ ЛИЧНЫЙ ID ИЗ @myidbot (число без кавычек)
+# =======================================================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 DB_NAME = "reports.db"
 
+
+# Функция получения текущего времени по Москве (UTC+3)
 def get_moscow_time():
     tz_moscow = timezone(timedelta(hours=3))
     return datetime.now(tz_moscow)
+
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -52,28 +45,27 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 class ShiftState(StatesGroup):
     waiting_for_earnings = State()
     waiting_for_info = State()
     waiting_for_screenshot = State()
 
+
+# Главная клавиатура
 def get_main_keyboard(user_id: int):
-    # Исправлена структура: теперь это правильный список строк с кнопками
     buttons = [
         [types.KeyboardButton(text="🟢 Пост принял")],
         [types.KeyboardButton(text="🔴 Пост сдал")],
-        [
-            types.KeyboardButton(text="📊 Инфо за месяц"),
-            types.KeyboardButton(text="👥 Участники")
-        ]
+        [types.KeyboardButton(text="📊 Инфо за месяц")]
     ]
-    
-    # Теперь корректно проверяем ID в списке владельцев
-    if user_id in OWNERS_TELEGRAM_IDS:
+    if user_id == OWNER_TELEGRAM_ID:
         buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
         
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
+
+# Inline-клавиатура для подтверждения очистки
 def get_confirm_keyboard():
     buttons = [
         [
@@ -83,6 +75,7 @@ def get_confirm_keyboard():
     ]
     return types.InlineKeyboardMarkup(inline_keyboard=buttons)
 
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -91,10 +84,12 @@ async def cmd_start(message: types.Message):
         reply_markup=get_main_keyboard(message.from_user.id)
     )
 
+
 @dp.message(F.text == "🟢 Пост принял")
 async def process_shift_start(message: types.Message):
     user = message.from_user
     now = get_moscow_time()
+    
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(
@@ -106,12 +101,14 @@ async def process_shift_start(message: types.Message):
     
     text_admin = f"🟢 **Пост принял**\n👤 Чаттер: {user.full_name} (@{user.username})\n⏰ Время: {now.strftime('%d.%m.%Y %H:%M')} МСК"
     await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
-    await message.answer("🟢 Вход на смену зафиксирован! Удачной работы.")
+    await message.answer("✅ Вход на смену зафиксирован! Удачной работы.")
+
 
 @dp.message(F.text == "🔴 Пост сдал")
 async def process_shift_end_start(message: types.Message, state: FSMContext):
     await message.answer("Сколько ты заработал на смене (введи только число, например: 150 или 75.5)?")
     await state.set_state(ShiftState.waiting_for_earnings)
+
 
 @dp.message(ShiftState.waiting_for_earnings)
 async def process_earnings(message: types.Message, state: FSMContext):
@@ -123,17 +120,20 @@ async def process_earnings(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("Пожалуйста, введи корректное число (заработок).")
 
+
 @dp.message(ShiftState.waiting_for_info)
 async def process_info(message: types.Message, state: FSMContext):
     await state.update_data(comment=message.text)
     await message.answer("Отправь скриншот(ы) продаж.")
     await state.set_state(ShiftState.waiting_for_screenshot)
 
+
 @dp.message(ShiftState.waiting_for_screenshot, F.photo)
 async def process_screenshot(message: types.Message, state: FSMContext):
     user = message.from_user
     now = get_moscow_time()
     data = await state.get_data()
+    
     earnings = data['earnings']
     comment = data['comment']
     photo_id = message.photo[-1].file_id
@@ -154,12 +154,13 @@ async def process_screenshot(message: types.Message, state: FSMContext):
         f"💰 Заработал: ${earnings}\n"
         f"📝 Важная инфа: {comment}"
     )
+    
     await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_id, caption=text_admin, parse_mode="Markdown")
-    await message.answer("🔴 Отчет успешно отправлен руководству! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
+    await message.answer("✅ Отчет успешно отправлен руководству! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
     await state.clear()
 
-# Исправлен синтаксис магического фильтра .in_() со списком []
-@dp.message(F.text.in_(["📊 Инфо за month", "📊 Инфо за месяц"]))
+
+@dp.message(F.text.in_({"📊 Инфо за month", "📊 Инфо за месяц"}))
 async def process_statistics(message: types.Message):
     one_month_ago = get_moscow_time() - timedelta(days=30)
     one_month_ago_str = one_month_ago.strftime("%Y-%m-%d %H:%M:%S")
@@ -168,31 +169,33 @@ async def process_statistics(message: types.Message):
     cursor = conn.cursor()
     
     cursor.execute('''
-        SELECT full_name, username, SUM(earnings) 
-        FROM shifts 
-        WHERE timestamp >= ? AND action = 'сдал' 
+        SELECT full_name, username, SUM(earnings)
+        FROM shifts
+        WHERE timestamp >= ? AND action = 'сдал'
         GROUP BY user_id
     ''', (one_month_ago_str,))
     balances = cursor.fetchall()
     
     cursor.execute('''
-        SELECT full_name, action, timestamp, earnings 
-        FROM shifts 
-        WHERE timestamp >= ? 
-        ORDER BY timestamp DESC 
+        SELECT full_name, action, timestamp, earnings
+        FROM shifts
+        WHERE timestamp >= ?
+        ORDER BY timestamp DESC
         LIMIT 20
     ''', (one_month_ago_str,))
     recent_actions = cursor.fetchall()
     conn.close()
     
-    response = f"📊 **ОТЧЕТ ЗА ПОСЛЕДНИЙ МЕСЯЦ (МСК)**\n\n💰 **Баланс чаттеров (Общий заработок):**\n"
+    response = "📊 **ОТЧЕТ ЗА ПОСЛЕДНИЙ МЕСЯЦ (МСК)**\n\n"
+    response += "💰 **Баланс чаттеров (Общий заработок):**\n"
+    
     if not balances:
         response += "Нет данных о заработке.\n"
     for name, username, total in balances:
         user_link = f"@{username}" if username else "нет юзернейма"
-        response += f"👤 {name} ({user_link}): **${total:.2f}**\n"
+        response += f"• {name} ({user_link}): **${total:.2f}**\n"
         
-    response += f"\n📉 **Последние действия на сменах:**\n"
+    response += "\n🕒 **Последние действия на сменах:**\n"
     if not recent_actions:
         response += "История пуста.\n"
     for name, action, dt_str, earn in recent_actions:
@@ -209,40 +212,25 @@ async def process_statistics(message: types.Message):
             
     await message.answer(response, parse_mode="Markdown")
 
-@dp.message(F.text == "👥 Участники")
-async def process_show_members(message: types.Message):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute('SELECT DISTINCT full_name, username FROM shifts WHERE user_id IS NOT NULL')
-    members = cursor.fetchall()
-    conn.close()
-    
-    response = "👥 **Участники (все, кто пользовался ботом):**\n\n"
-    if not members:
-        response += "В базе данных пока нет зарегистрированных участников."
-    else:
-        for idx, (full_name, username) in enumerate(members, 1):
-            user_link = f"@{username}" if username else "нет юзернейма"
-            response += f"{idx}. {full_name} ({user_link})\n"
-            
-    await message.answer(response, parse_mode="Markdown")
 
 @dp.message(F.text == "🧹 Очистить месяц")
 async def process_clear_database_request(message: types.Message):
-    if message.from_user.id not in OWNERS_TELEGRAM_IDS:
-        await message.answer("🔴 У вас нет прав для выполнения этой команды.")
+    if message.from_user.id != OWNER_TELEGRAM_ID:
+        await message.answer("🛑 У вас нет прав для выполнения этой команды.")
         return
         
     await message.answer(
-        "⚠️ **ВНИМАНИЕ!** Вы собираетесь полностью очистить базу данных за месяц.\nВы уверены?",
+        "⚠️ **ВНИМАНИЕ!** Вы собираетесь полностью очистить базу данных за месяц.\n"
+        "Все балансы сотрудников и история смен будут безвозвратно удалены. Вы уверены?",
         reply_markup=get_confirm_keyboard(),
         parse_mode="Markdown"
     )
 
+
 @dp.callback_query(F.data == "db_confirm_clear")
 async def callback_confirm_clear(callback: types.CallbackQuery):
-    if callback.from_user.id not in OWNERS_TELEGRAM_IDS:
-        await callback.answer("🔴 Отказано в доступе.", show_alert=True)
+    if callback.from_user.id != OWNER_TELEGRAM_ID:
+        await callback.answer("🛑 Отказано в доступе.", show_alert=True)
         return
         
     conn = sqlite3.connect(DB_NAME)
@@ -251,8 +239,23 @@ async def callback_confirm_clear(callback: types.CallbackQuery):
     conn.commit()
     conn.close()
     
-    await callback.message.edit_text("🧹 **База данных успешно очищена!**", parse_mode="Markdown")
+    await callback.message.edit_text("🧹 **База данных успешно очищена!** Все балансы за месяц и история смен сброшены до нуля.", parse_mode="Markdown")
     await callback.answer("База данных успешно очищена!")
+
 
 @dp.callback_query(F.data == "db_cancel_clear")
 async def callback_cancel_clear(callback: types.CallbackQuery):
+    await callback.message.edit_text("❌ Очистка базы данных отменена. Данные чаттеров в безопасности.")
+    await callback.answer("Действие отменено.")
+
+
+# --- ПРАВИЛЬНЫЙ АСИНХРОННЫЙ ЗАПУСК ДЛЯ AIOGRAM 3 ---
+async def main():
+    init_db()
+    print("Бот успешно запущен на московском времени (период: месяц)...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
