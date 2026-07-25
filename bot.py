@@ -57,19 +57,28 @@ def get_main_keyboard(user_id: int):
     buttons = [
         [types.KeyboardButton(text="🟢 Пост принял")],
         [types.KeyboardButton(text="🔴 Пост сдал")],
-        [types.KeyboardButton(text="📊 Инфо за месяц")]
+        [types.KeyboardButton(text="📊 Инфо за month") or types.KeyboardButton(text="📊 Инфо за месяц")]
     ]
-    # Только для владельцев добавляем кнопку просмотра участников
+    # Только для владельцев добавляем админские кнопки
     if user_id in OWNERS_IDS:
         buttons.append([types.KeyboardButton(text="👥 Участники")])
+        buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
         
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+def get_confirm_keyboard():
+    buttons = [
+        [
+            types.InlineKeyboardButton(text="⚠️ Подтвердить удаление", callback_data="db_confirm_clear"),
+            types.InlineKeyboardButton(text="❌ Отмена", callback_data="db_cancel_clear")
+        ]
+    ]
+    return types.InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user = message.from_user
     
-    # Автоматически сохраняем каждого, кто нажал /start
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(
@@ -155,7 +164,7 @@ async def process_screenshot(message: types.Message, state: FSMContext):
     await message.answer("✅ Отчет успешно отправлен руководством! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
     await state.clear()
 
-@dp.message(lambda msg: msg.text == "📊 Инфо за месяц")
+@dp.message(lambda msg: msg.text in ["📊 Инфо за month", "📊 Инфо за месяц"])
 async def process_statistics(message: types.Message):
     one_month_ago = get_moscow_time() - timedelta(days=30)
     one_month_ago_str = one_month_ago.strftime("%Y-%m-%d %H:%M:%S")
@@ -227,7 +236,29 @@ async def process_view_users(message: types.Message):
         
     await message.answer(response, parse_mode="Markdown")
 
-if __name__ == '__main__':
-    init_db()
-    print("Бот успешно запущен...")
-    dp.run_polling(bot)
+@dp.message(lambda msg: msg.text == "🧹 Очистить месяц")
+async def process_clear_database_request(message: types.Message):
+    if message.from_user.id not in OWNERS_IDS:
+        await message.answer("⛔ У вас нет прав для выполнения этой команды.")
+        return
+        
+    await message.answer(
+        "⚠️ **ВНИМАНИЕ!** Вы собираетесь полностью очистить базу данных за месяц.\n"
+        "Все балансы сотрудников и история смен будут безвозвратно удалены. Вы уверены?",
+        reply_markup=get_confirm_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data == "db_confirm_clear")
+async def callback_confirm_clear(callback: types.CallbackQuery):
+    if callback.from_user.id not in OWNERS_IDS:
+        await callback.answer("⛔ Отказано в доступе.", show_alert=True)
+        return
+        
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM shifts")
+    conn.commit()
+    conn.close()
+    
+    await callback.message.edit_text("🧹 **База данных успешно очищена!** Все балансы за месяц и история смен сброшены до нуля.", parse_mode="Markdown")
