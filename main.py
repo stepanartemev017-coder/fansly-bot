@@ -13,13 +13,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ================================================
 BOT_TOKEN = "8985257496:AAF8XxPVAA-CarYbnm8D3Pe0J65OLVOJco4"
 ADMIN_GROUP_ID = -5136108392
-OWNER_TELEGRAM_ID = 963341281
+OWNER_IDS = {963341281, 8207913329}  # список ID владельцев бота
 # ================================================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 DB_NAME = "reports.db"
-
 
 # Функция получения текущего времени по Москве (UTC+3)
 def get_moscow_time():
@@ -52,6 +51,17 @@ class ShiftState(StatesGroup):
     waiting_for_screenshot = State()
 
 
+# Тексты главных кнопок меню — используются, чтобы понять,
+# что пользователь хочет "выйти" из текущего процесса (например, из ввода заработка)
+MENU_PREFIXES = ("🟢", "🔴", "📊", "🧹")
+
+
+def is_menu_button(text: str) -> bool:
+    if not text:
+        return False
+    return any(text.startswith(p) for p in MENU_PREFIXES)
+
+
 # Главная клавиатура
 def get_main_keyboard(user_id: int):
     buttons = [
@@ -59,7 +69,7 @@ def get_main_keyboard(user_id: int):
         [types.KeyboardButton(text="🔴 Пост сдал")],
         [types.KeyboardButton(text="📊 Инфо за месяц")]
     ]
-    if user_id == OWNER_TELEGRAM_ID:
+    if user_id in OWNER_IDS:
         buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
 
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -77,7 +87,8 @@ def get_confirm_keyboard():
 
 
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer(
         f"Привет, {message.from_user.full_name}! Я бот для отчетов Fansly (Время: МСК).\n"
         "Используй кнопки ниже для управления сменой.",
@@ -85,11 +96,9 @@ async def cmd_start(message: types.Message):
     )
 
 
-# ВАЖНО: используем startswith по эмодзи вместо точного сравнения текста —
-# это устойчиво к невидимым символам, которые могли попасть в текст кнопки
-# при копировании эмодзи, и является основной причиной "кнопки не реагируют".
 @dp.message(F.text.startswith("🟢"))
-async def process_shift_start(message: types.Message):
+async def process_shift_start(message: types.Message, state: FSMContext):
+    await state.clear()  # на случай если человек был в середине другого процесса
     user = message.from_user
     now = get_moscow_time()
 
@@ -109,23 +118,50 @@ async def process_shift_start(message: types.Message):
 
 @dp.message(F.text.startswith("🔴"))
 async def process_shift_end_start(message: types.Message, state: FSMContext):
+    await state.clear()  # на случай если человек уже был в середине другого процесса
     await message.answer("Сколько ты заработал на смене (введи только число, например: 150 или 75.5)?")
     await state.set_state(ShiftState.waiting_for_earnings)
 
 
 @dp.message(ShiftState.waiting_for_earnings)
 async def process_earnings(message: types.Message, state: FSMContext):
+    # Если во время ввода числа человек нажал другую кнопку меню — не блокируем его,
+    # а сбрасываем текущий процесс и обрабатываем нажатую кнопку как обычно.
+    if is_menu_button(message.text):
+        await state.clear()
+        if message.text.startswith("🟢"):
+            await process_shift_start(message, state)
+        elif message.text.startswith("🔴"):
+            await process_shift_end_start(message, state)
+        elif message.text.startswith("📊"):
+            await process_statistics(message)
+        elif message.text.startswith("🧹"):
+            await process_clear_database_request(message)
+        return
+
     try:
         earnings = float(message.text.replace(",", "."))
         await state.update_data(earnings=earnings)
         await message.answer("Напиши важную информацию/комментарий по смене:")
         await state.set_state(ShiftState.waiting_for_info)
-    except ValueError:
+    except (ValueError, TypeError):
         await message.answer("Пожалуйста, введи корректное число (заработок).")
 
 
 @dp.message(ShiftState.waiting_for_info)
 async def process_info(message: types.Message, state: FSMContext):
+    if is_menu_button(message.text):
+        await state.clear()
+        if message.text.startswith("🟢"):
+            await process_shift_start(message, state)
+        elif message.text.startswith("🔴"):
+            await process_shift_end_start(message, state)
+        elif message.text.startswith("📊"):
+            await process_statistics(message)
+        elif message.text.startswith("🧹"):
+            await process_clear_database_request(message)
+        return
+
     await state.update_data(comment=message.text)
     await message.answer("Отправь скриншот(ы) продаж.")
     await state.set_state(ShiftState.waiting_for_screenshot)
@@ -161,6 +197,66 @@ async def process_screenshot(message: types.Message, state: FSMContext):
     await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_id, caption=text_admin, parse_mode="Markdown")
     await message.answer("✅ Отчет успешно отправлен руководству! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
     await state.clear()
+
+
+@dp.message(ShiftState.waiting_for_screenshot)
+async def process_screenshot_wrong_content(message: types.Message, state: FSMContext):
+    # Сюда попадают любые НЕ-фото сообщения в состоянии ожидания скриншота
+    if is_menu_button(message.text):
+        await state.clear()
+        if message.text.startswith("🟢"):
+            await process_shift_start(message, state)
+        elif message.text.startswith("🔴"):
+            await process_shift_end_start(message, state)
+        elif message.text.startswith("📊"):
+            await process_statistics(message)
+        elif message.text.startswith("🧹"):
+            await process_clear_database_request(message)
+        return
+
+    await message.answer("Пожалуйста, отправь именно фото (скриншот) продаж.")
+
+
+@dp.message(Command("add"))
+async def cmd_add_manual(message: types.Message):
+    """Ручное добавление уже случившегося заработка в статистику месяца.
+    Использование: /add Имя Сумма Комментарий
+    Пример: /add PlumBear 252.59 Активность хорошая"""
+    if message.from_user.id not in OWNER_IDS:
+        await message.answer("🔴 У вас нет прав для этой команды.")
+        return
+
+    parts = message.text.split(maxsplit=3)
+    if len(parts) < 3:
+        await message.answer(
+            "Использование:\n`/add Имя Сумма Комментарий`\n\nПример:\n`/add PlumBear 252.59 Активность хорошая`",
+            parse_mode="Markdown"
+        )
+        return
+
+    _, name, amount_str = parts[0], parts[1], parts[2]
+    comment = parts[3] if len(parts) > 3 else ""
+
+    try:
+        earnings = float(amount_str.replace(",", "."))
+    except ValueError:
+        await message.answer(
+            "Сумма должна быть числом.\nПример: `/add PlumBear 252.59 комментарий`",
+            parse_mode="Markdown"
+        )
+        return
+
+    now = get_moscow_time()
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO shifts (user_id, username, full_name, action, timestamp, earnings, comment) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (0, None, name, "сдал", now.strftime("%Y-%m-%d %H:%M:%S"), earnings, comment)
+    )
+    conn.commit()
+    conn.close()
+
+    await message.answer(f"✅ Добавлено вручную: {name} — ${earnings:.2f}\n(попадёт в «Инфо за месяц»)")
 
 
 @dp.message(F.text.in_({"📊 Инфо за month", "📊 Инфо за месяц"}))
@@ -218,7 +314,7 @@ async def process_statistics(message: types.Message):
 
 @dp.message(F.text.startswith("🧹"))
 async def process_clear_database_request(message: types.Message):
-    if message.from_user.id != OWNER_TELEGRAM_ID:
+    if message.from_user.id not in OWNER_IDS:
         await message.answer("🔴 У вас нет прав для выполнения этой команды.")
         return
 
@@ -232,7 +328,7 @@ async def process_clear_database_request(message: types.Message):
 
 @dp.callback_query(F.data == "db_confirm_clear")
 async def callback_confirm_clear(callback: types.CallbackQuery):
-    if callback.from_user.id != OWNER_TELEGRAM_ID:
+    if callback.from_user.id not in OWNER_IDS:
         await callback.answer("🔴 Отказано в доступе.", show_alert=True)
         return
 
