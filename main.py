@@ -72,6 +72,11 @@ BTN_INFO_MONTH = "📊 Инфо за месяц"
 BTN_INFO_YEAR = "📅 Инфо за год"
 BTN_BACK_MAIN = "🔙 Главное меню"
 
+# Тексты кнопок подменю "Очистка"
+BTN_CLEAR_MAIN = "🧹 Очистка"
+BTN_CLEAR_MONTH = "🧹 Очистить месяц"
+BTN_CLEAR_YEAR = "🧹 Очистить год"
+
 # Тексты главных кнопок меню — используются, чтобы понять,
 # что пользователь хочет "выйти" из текущего процесса (например, из ввода заработка)
 MENU_PREFIXES = ("🟢", "🔴", "🟠", "📊", "🧹", "✏️", "👥", "📅", "🔙")
@@ -95,6 +100,12 @@ async def route_menu_button(message: types.Message, state: FSMContext):
         await process_statistics(message)
     elif text == BTN_INFO_YEAR:
         await process_yearly_stats(message)
+    elif text == BTN_CLEAR_MAIN:
+        await process_clear_menu(message, state)
+    elif text == BTN_CLEAR_MONTH:
+        await process_clear_month_request(message)
+    elif text == BTN_CLEAR_YEAR:
+        await process_clear_year_request(message)
     elif text == BTN_BACK_MAIN:
         await process_back_to_main(message, state)
     elif text.startswith("🟢"):
@@ -103,8 +114,6 @@ async def route_menu_button(message: types.Message, state: FSMContext):
         await process_shift_end_start(message, state)
     elif text.startswith("🟠"):
         await process_dolyot_start(message, state)
-    elif text.startswith("🧹"):
-        await process_clear_database_request(message)
     elif text.startswith("✏️"):
         await process_edit_balance_start(message, state)
     elif text.startswith("👥"):
@@ -122,7 +131,7 @@ def get_main_keyboard(user_id: int):
     if user_id in OWNER_IDS:
         buttons.append([types.KeyboardButton(text="✏️ Изменить баланс")])
         buttons.append([types.KeyboardButton(text="👥 Список участников")])
-        buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
+        buttons.append([types.KeyboardButton(text=BTN_CLEAR_MAIN)])
 
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
@@ -137,12 +146,22 @@ def get_info_keyboard():
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
-# Inline-клавиатура для подтверждения очистки
-def get_confirm_keyboard():
+# Подменю "Очистка" — только для владельцев
+def get_clear_menu_keyboard():
+    buttons = [
+        [types.KeyboardButton(text=BTN_CLEAR_MONTH)],
+        [types.KeyboardButton(text=BTN_CLEAR_YEAR)],
+        [types.KeyboardButton(text=BTN_BACK_MAIN)]
+    ]
+    return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+
+# Inline-клавиатура для подтверждения очистки. scope: "month" или "year"
+def get_confirm_keyboard(scope: str):
     buttons = [
         [
-            types.InlineKeyboardButton(text="✅ Да, очистить базу", callback_data="db_confirm_clear"),
-            types.InlineKeyboardButton(text="❌ Отмена", callback_data="db_cancel_clear")
+            types.InlineKeyboardButton(text="✅ Да, очистить", callback_data=f"db_confirm_clear:{scope}"),
+            types.InlineKeyboardButton(text="❌ Отмена", callback_data=f"db_cancel_clear:{scope}")
         ]
     ]
     return types.InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -152,7 +171,7 @@ def get_confirm_keyboard():
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     is_owner = message.from_user.id in OWNER_IDS
-    owner_note = "\n\n✅ Ты в списке владельцев." if is_owner else "\n\n⚠️ Ты НЕ в списке владельцев (нет доступа к «Очистить месяц» и «Изменить баланс»)."
+    owner_note = "\n\n✅ Ты в списке владельцев." if is_owner else "\n\n⚠️ Ты НЕ в списке владельцев (нет доступа к «Очистка» и «Изменить баланс»)."
     await message.answer(
         f"Привет, {message.from_user.full_name}! Я бот для отчетов Fansly (Время: МСК).\n"
         "Используй кнопки ниже для управления сменой.\n\n"
@@ -172,6 +191,15 @@ async def cmd_id(message: types.Message):
 async def process_info_menu(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("Выбери раздел:", reply_markup=get_info_keyboard())
+
+
+@dp.message(F.text == BTN_CLEAR_MAIN)
+async def process_clear_menu(message: types.Message, state: FSMContext):
+    if message.from_user.id not in OWNER_IDS:
+        await message.answer("🔴 У вас нет прав для этого раздела.")
+        return
+    await state.clear()
+    await message.answer("Выбери, что очистить:", reply_markup=get_clear_menu_keyboard())
 
 
 @dp.message(F.text == BTN_BACK_MAIN)
@@ -741,39 +769,72 @@ async def process_participants_list(message: types.Message):
     await message.answer(response, parse_mode="Markdown")
 
 
-@dp.message(F.text.startswith("🧹"))
-async def process_clear_database_request(message: types.Message):
+@dp.message(F.text == BTN_CLEAR_MONTH)
+async def process_clear_month_request(message: types.Message):
     if message.from_user.id not in OWNER_IDS:
         await message.answer("🔴 У вас нет прав для выполнения этой команды.")
         return
 
     await message.answer(
-        "⚠️ **ВНИМАНИЕ!** Вы собираетесь полностью очистить базу данных за месяц.\n"
-        "Все балансы сотрудников и история смен будут безвозвратно удалены. Вы уверены?",
-        reply_markup=get_confirm_keyboard(),
+        "⚠️ **ВНИМАНИЕ!** Вы собираетесь очистить данные за ТЕКУЩИЙ МЕСЯЦ.\n"
+        "Все действия (принял/сдал/долёт/корректировки) за этот месяц будут безвозвратно удалены. Вы уверены?",
+        reply_markup=get_confirm_keyboard("month"),
         parse_mode="Markdown"
     )
 
 
-@dp.callback_query(F.data == "db_confirm_clear")
+@dp.message(F.text == BTN_CLEAR_YEAR)
+async def process_clear_year_request(message: types.Message):
+    if message.from_user.id not in OWNER_IDS:
+        await message.answer("🔴 У вас нет прав для выполнения этой команды.")
+        return
+
+    await message.answer(
+        "⚠️ **ВНИМАНИЕ!** Вы собираетесь очистить данные за ТЕКУЩИЙ ГОД (все 12 месяцев).\n"
+        "Все действия за этот год будут безвозвратно удалены. Вы уверены?",
+        reply_markup=get_confirm_keyboard("year"),
+        parse_mode="Markdown"
+    )
+
+
+@dp.callback_query(F.data.startswith("db_confirm_clear:"))
 async def callback_confirm_clear(callback: types.CallbackQuery):
     if callback.from_user.id not in OWNER_IDS:
         await callback.answer("🔴 Отказано в доступе.", show_alert=True)
         return
 
+    scope = callback.data.split(":", 1)[1]
+    now = get_moscow_time()
+
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM shifts")
+
+    if scope == "month":
+        period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if now.month == 12:
+            period_end = period_start.replace(year=now.year + 1, month=1)
+        else:
+            period_end = period_start.replace(month=now.month + 1)
+        scope_label = "за текущий месяц"
+    else:  # "year"
+        period_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        period_end = period_start.replace(year=now.year + 1)
+        scope_label = "за текущий год"
+
+    cursor.execute(
+        "DELETE FROM shifts WHERE timestamp >= ? AND timestamp < ?",
+        (period_start.strftime("%Y-%m-%d %H:%M:%S"), period_end.strftime("%Y-%m-%d %H:%M:%S"))
+    )
     conn.commit()
     conn.close()
 
-    await callback.message.edit_text("🧹 **База данных успешно очищена!** Все балансы за месяц и история смен сброшены до нуля.", parse_mode="Markdown")
-    await callback.answer("База данных успешно очищена!")
+    await callback.message.edit_text(f"🧹 **Данные {scope_label} успешно очищены!**", parse_mode="Markdown")
+    await callback.answer("Очищено!")
 
 
-@dp.callback_query(F.data == "db_cancel_clear")
+@dp.callback_query(F.data.startswith("db_cancel_clear:"))
 async def callback_cancel_clear(callback: types.CallbackQuery):
-    await callback.message.edit_text("❌ Очистка базы данных отменена. Данные чаттеров в безопасности.")
+    await callback.message.edit_text("❌ Очистка отменена. Данные чаттеров в безопасности.")
     await callback.answer("Действие отменено.")
 
 
