@@ -61,6 +61,7 @@ class DolyotState(StatesGroup):
 class EditBalanceState(StatesGroup):
     waiting_for_name = State()
     waiting_for_username = State()
+    waiting_for_date = State()
     waiting_for_amount = State()
     waiting_for_comment = State()
 
@@ -449,6 +450,39 @@ async def process_edit_balance_username(message: types.Message, state: FSMContex
     username = None if raw == "-" else raw
     await state.update_data(edit_username=username)
     await message.answer(
+        "На какую дату записать изменение?\n"
+        "Введи день и месяц в формате `ДД.ММ` (например `15.07`), или отправь «-», чтобы использовать сегодняшнюю дату.",
+        parse_mode="Markdown"
+    )
+    await state.set_state(EditBalanceState.waiting_for_date)
+
+
+@dp.message(EditBalanceState.waiting_for_date)
+async def process_edit_balance_date(message: types.Message, state: FSMContext):
+    if is_menu_button(message.text):
+        await route_menu_button(message, state)
+        return
+
+    now = get_moscow_time()
+    raw = message.text.strip()
+
+    if raw == "-":
+        chosen_dt = now
+    else:
+        parts = raw.split(".")
+        if len(parts) != 2:
+            await message.answer("Формат должен быть `ДД.ММ`, например `15.07`. Попробуй ещё раз, или отправь «-» для сегодняшней даты.", parse_mode="Markdown")
+            return
+        try:
+            day = int(parts[0])
+            month = int(parts[1])
+            chosen_dt = now.replace(month=month, day=day)
+        except (ValueError, TypeError):
+            await message.answer("Не получилось распознать дату. Формат `ДД.ММ`, например `15.07`. Попробуй ещё раз.", parse_mode="Markdown")
+            return
+
+    await state.update_data(edit_date=chosen_dt.strftime("%Y-%m-%d %H:%M:%S"))
+    await message.answer(
         "На сколько изменить баланс?\n"
         "Укажи знак: `+` чтобы прибавить, `-` чтобы убавить.\n"
         "Например: `+50` или `-20.5`",
@@ -490,21 +524,22 @@ async def process_edit_balance_comment(message: types.Message, state: FSMContext
     name = data['edit_name']
     username = data.get('edit_username')
     delta = data['edit_delta']
+    date_str = data['edit_date']
     comment = "" if message.text.strip() == "-" else message.text
 
-    now = get_moscow_time()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO shifts (user_id, username, full_name, action, timestamp, earnings, comment) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (0, username, name, "корректировка", now.strftime("%Y-%m-%d %H:%M:%S"), delta, comment)
+        (0, username, name, "корректировка", date_str, delta, comment)
     )
     conn.commit()
     conn.close()
 
     sign_text = f"+${delta:.2f}" if delta >= 0 else f"-${abs(delta):.2f}"
+    date_display = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S").strftime("%d.%m")
     await message.answer(
-        f"✅ Баланс изменён: {name} — {sign_text}\n(попадёт в «Инфо за месяц»)",
+        f"✅ Баланс изменён: {name} — {sign_text} (дата {date_display})\n(попадёт в «Инфо за месяц»)",
         reply_markup=get_main_keyboard(message.from_user.id)
     )
     await state.clear()
@@ -526,7 +561,7 @@ async def process_statistics(message: types.Message):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT user_id, username, full_name, action, timestamp, earnings
+        SELECT user_id, username, full_name, action, timestamp, earnings, comment
         FROM shifts
         WHERE timestamp >= ? AND timestamp < ?
         ORDER BY full_name, timestamp ASC
@@ -541,7 +576,7 @@ async def process_statistics(message: types.Message):
     # Группируем все записи по каждому чаттеру, отдельно считая период 1-15 и 16-конец месяца
     chatters = {}
     order = []
-    for user_id, username, full_name, action, dt_str, earnings in rows:
+    for user_id, username, full_name, action, dt_str, earnings, comment in rows:
         key = (user_id or 0, full_name)
         if key not in chatters:
             chatters[key] = {
@@ -555,9 +590,11 @@ async def process_statistics(message: types.Message):
         try:
             dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
             dt_formatted = dt.strftime("%d.%m %H:%M")
+            date_short = dt.strftime("%d.%m")
             day = dt.day
         except ValueError:
             dt_formatted = dt_str
+            date_short = dt_str
             day = 1  # fallback, если формат даты неожиданный
 
         period = 1 if day <= 15 else 2
@@ -567,7 +604,7 @@ async def process_statistics(message: types.Message):
             else:
                 chatters[key]["total_p2"] += earnings
 
-        chatters[key]["actions"].append((dt_formatted, action, earnings, period))
+        chatters[key]["actions"].append((dt_formatted, date_short, action, earnings, comment, period))
 
     parts = [f"📊 **ОТЧЕТ ЗА {now.strftime('%m.%Y')} (МСК)**\n"]
 
@@ -581,14 +618,14 @@ async def process_statistics(message: types.Message):
             f"   💵 16–конец месяца: **${info['total_p2']:.2f}**\n"
             f"   💰 Итого за месяц: **${total:.2f}**\n"
         )
-        for dt_formatted, action, earnings, period in info["actions"]:
+        for dt_formatted, date_short, action, earnings, comment, period in info["actions"]:
             if action == "принял":
                 block += f"   🟢 {dt_formatted} — принял пост\n"
             elif action == "долет":
                 block += f"   🟠 {dt_formatted} — долёт (${earnings:.2f})\n"
             elif action == "корректировка":
-                sign_text = f"+${earnings:.2f}" if earnings >= 0 else f"-${abs(earnings):.2f}"
-                block += f"   ✏️ {dt_formatted} — изменение баланса ({sign_text})\n"
+                comment_part = f" {comment}" if comment else ""
+                block += f"   ✏️ Изменение баланса. {date_short}.{comment_part}\n"
             else:
                 block += f"   🔴 {dt_formatted} — сдал (${earnings:.2f})\n"
 
