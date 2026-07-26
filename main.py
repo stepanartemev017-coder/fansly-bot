@@ -11,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ================================================
 # НАСТРОЙКИ
 # ================================================
-BOT_TOKEN = "8985257496:AAF8XxPVAA-CarYbnm8D3Pe0J65OLVOJco4"
+BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNXJ1nQM5Rkag"
 ADMIN_GROUP_ID = -5136108392
 OWNER_IDS = {963341281, 8207913329}  # список ID владельцев бота (видят "Очистить месяц" и "Добавить баланс")
 # ================================================
@@ -52,7 +52,13 @@ class ShiftState(StatesGroup):
     waiting_for_screenshot = State()
 
 
-class AddBalanceState(StatesGroup):
+class DolyotState(StatesGroup):
+    waiting_for_earnings = State()
+    waiting_for_comment = State()
+    waiting_for_screenshot = State()
+
+
+class EditBalanceState(StatesGroup):
     waiting_for_name = State()
     waiting_for_username = State()
     waiting_for_amount = State()
@@ -61,7 +67,7 @@ class AddBalanceState(StatesGroup):
 
 # Тексты главных кнопок меню — используются, чтобы понять,
 # что пользователь хочет "выйти" из текущего процесса (например, из ввода заработка)
-MENU_PREFIXES = ("🟢", "🔴", "📊", "🧹", "➕", "👥")
+MENU_PREFIXES = ("🟢", "🔴", "🟠", "📊", "🧹", "✏️", "👥")
 
 
 def is_menu_button(text: str) -> bool:
@@ -79,12 +85,14 @@ async def route_menu_button(message: types.Message, state: FSMContext):
         await process_shift_start(message, state)
     elif message.text.startswith("🔴"):
         await process_shift_end_start(message, state)
+    elif message.text.startswith("🟠"):
+        await process_dolyot_start(message, state)
     elif message.text.startswith("📊"):
         await process_statistics(message)
     elif message.text.startswith("🧹"):
         await process_clear_database_request(message)
-    elif message.text.startswith("➕"):
-        await process_add_balance_start(message, state)
+    elif message.text.startswith("✏️"):
+        await process_edit_balance_start(message, state)
     elif message.text.startswith("👥"):
         await process_participants_list(message)
 
@@ -94,10 +102,11 @@ def get_main_keyboard(user_id: int):
     buttons = [
         [types.KeyboardButton(text="🟢 Пост принял")],
         [types.KeyboardButton(text="🔴 Пост сдал")],
+        [types.KeyboardButton(text="🟠 Долёт")],
         [types.KeyboardButton(text="📊 Инфо за месяц")]
     ]
     if user_id in OWNER_IDS:
-        buttons.append([types.KeyboardButton(text="➕ Добавить баланс")])
+        buttons.append([types.KeyboardButton(text="✏️ Изменить баланс")])
         buttons.append([types.KeyboardButton(text="👥 Список участников")])
         buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
 
@@ -119,7 +128,7 @@ def get_confirm_keyboard():
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     is_owner = message.from_user.id in OWNER_IDS
-    owner_note = "\n\n✅ Ты в списке владельцев." if is_owner else "\n\n⚠️ Ты НЕ в списке владельцев (нет доступа к «Очистить месяц» и «Добавить баланс»)."
+    owner_note = "\n\n✅ Ты в списке владельцев." if is_owner else "\n\n⚠️ Ты НЕ в списке владельцев (нет доступа к «Очистить месяц» и «Изменить баланс»)."
     await message.answer(
         f"Привет, {message.from_user.full_name}! Я бот для отчетов Fansly (Время: МСК).\n"
         "Используй кнопки ниже для управления сменой.\n\n"
@@ -160,6 +169,113 @@ async def process_shift_end_start(message: types.Message, state: FSMContext):
     await state.clear()  # на случай если человек уже был в середине другого процесса
     await message.answer("Сколько ты заработал на смене (введи только число, например: 150 или 75.5)?")
     await state.set_state(ShiftState.waiting_for_earnings)
+
+
+@dp.message(F.text.startswith("🟠"))
+async def process_dolyot_start(message: types.Message, state: FSMContext):
+    await state.clear()  # на случай если человек уже был в середине другого процесса
+    await message.answer("Сколько всего долетело (введи только число, например: 150 или 75.5)?")
+    await state.set_state(DolyotState.waiting_for_earnings)
+
+
+@dp.message(DolyotState.waiting_for_earnings)
+async def process_dolyot_earnings(message: types.Message, state: FSMContext):
+    if is_menu_button(message.text):
+        await route_menu_button(message, state)
+        return
+
+    try:
+        earnings = float(message.text.replace(",", "."))
+        await state.update_data(dolyot_earnings=earnings)
+        await message.answer("Комментарий по желанию (или отправь «-», если не нужен):")
+        await state.set_state(DolyotState.waiting_for_comment)
+    except (ValueError, TypeError):
+        await message.answer("Пожалуйста, введи корректное число.")
+
+
+@dp.message(DolyotState.waiting_for_comment)
+async def process_dolyot_comment(message: types.Message, state: FSMContext):
+    if is_menu_button(message.text):
+        await route_menu_button(message, state)
+        return
+
+    comment = "" if message.text.strip() == "-" else message.text
+    await state.update_data(dolyot_comment=comment)
+    await message.answer("Отправь скриншот(ы) долёта.")
+    await state.set_state(DolyotState.waiting_for_screenshot)
+
+
+dolyot_album_buffers: dict = {}
+
+
+async def send_dolyot_report(message: types.Message, state: FSMContext, photo_ids: list):
+    user = message.from_user
+    now = get_moscow_time()
+    data = await state.get_data()
+
+    earnings = data.get('dolyot_earnings')
+    comment = data.get('dolyot_comment') or ""
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO shifts (user_id, username, full_name, action, timestamp, earnings, comment) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (user.id, user.username, user.full_name, "долет", now.strftime("%Y-%m-%d %H:%M:%S"), earnings, comment)
+    )
+    conn.commit()
+    conn.close()
+
+    text_admin = (
+        f"🟠 **Долёт (ОТЧЕТ)**\n"
+        f"👤 Чаттер: {user.full_name} (@{user.username})\n"
+        f"🕐 Время: {now.strftime('%d.%m.%Y %H:%M')} МСК\n"
+        f"💰 Сумма: ${earnings}\n"
+    )
+    if comment:
+        text_admin += f"📝 Комментарий: {comment}"
+
+    if len(photo_ids) == 1:
+        await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
+    else:
+        media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
+        media += [types.InputMediaPhoto(media=pid) for pid in photo_ids[1:]]
+        await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media)
+
+    await message.answer("✅ Отчет по долёту отправлен руководству!", reply_markup=get_main_keyboard(user.id))
+    await state.clear()
+
+
+async def _finalize_dolyot_album(media_group_id: str):
+    await asyncio.sleep(ALBUM_WAIT_SECONDS)
+    buf = dolyot_album_buffers.pop(media_group_id, None)
+    if not buf:
+        return
+    await send_dolyot_report(buf["message"], buf["state"], buf["photos"])
+
+
+@dp.message(DolyotState.waiting_for_screenshot, F.photo)
+async def process_dolyot_screenshot(message: types.Message, state: FSMContext):
+    photo_id = message.photo[-1].file_id
+    mgid = message.media_group_id
+
+    if mgid is None:
+        await send_dolyot_report(message, state, [photo_id])
+        return
+
+    if mgid not in dolyot_album_buffers:
+        dolyot_album_buffers[mgid] = {"photos": [], "message": message, "state": state}
+    dolyot_album_buffers[mgid]["photos"].append(photo_id)
+    dolyot_album_buffers[mgid]["message"] = message
+    asyncio.create_task(_finalize_dolyot_album(mgid))
+
+
+@dp.message(DolyotState.waiting_for_screenshot)
+async def process_dolyot_screenshot_wrong_content(message: types.Message, state: FSMContext):
+    if is_menu_button(message.text):
+        await route_menu_button(message, state)
+        return
+
+    await message.answer("Пожалуйста, отправь именно фото (скриншот) долёта.")
 
 
 @dp.message(ShiftState.waiting_for_earnings)
@@ -267,65 +383,78 @@ async def process_screenshot_wrong_content(message: types.Message, state: FSMCon
     await message.answer("Пожалуйста, отправь именно фото (скриншот) продаж.")
 
 
-# ---------- Добавление баланса вручную (кнопкой) ----------
+# ---------- Изменение баланса вручную (кнопкой): плюс или минус ----------
 
-@dp.message(F.text.startswith("➕"))
-async def process_add_balance_start(message: types.Message, state: FSMContext):
+@dp.message(F.text.startswith("✏️"))
+async def process_edit_balance_start(message: types.Message, state: FSMContext):
     if message.from_user.id not in OWNER_IDS:
         await message.answer("🔴 У вас нет прав для этой команды.")
         return
     await state.clear()
-    await message.answer("Введи имя чаттера, кому добавить баланс:")
-    await state.set_state(AddBalanceState.waiting_for_name)
+    await message.answer("Введи имя чаттера, кому изменить баланс:")
+    await state.set_state(EditBalanceState.waiting_for_name)
 
 
-@dp.message(AddBalanceState.waiting_for_name)
-async def process_add_balance_name(message: types.Message, state: FSMContext):
+@dp.message(EditBalanceState.waiting_for_name)
+async def process_edit_balance_name(message: types.Message, state: FSMContext):
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-    await state.update_data(add_name=message.text)
+    await state.update_data(edit_name=message.text)
     await message.answer("Введи username чаттера без @ (или отправь «-», если username нет):")
-    await state.set_state(AddBalanceState.waiting_for_username)
+    await state.set_state(EditBalanceState.waiting_for_username)
 
 
-@dp.message(AddBalanceState.waiting_for_username)
-async def process_add_balance_username(message: types.Message, state: FSMContext):
+@dp.message(EditBalanceState.waiting_for_username)
+async def process_edit_balance_username(message: types.Message, state: FSMContext):
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
     raw = message.text.strip().lstrip("@")
     username = None if raw == "-" else raw
-    await state.update_data(add_username=username)
-    await message.answer("Введи сумму заработка (число, например 150 или 75.5):")
-    await state.set_state(AddBalanceState.waiting_for_amount)
+    await state.update_data(edit_username=username)
+    await message.answer(
+        "На сколько изменить баланс?\n"
+        "Укажи знак: `+` чтобы прибавить, `-` чтобы убавить.\n"
+        "Например: `+50` или `-20.5`",
+        parse_mode="Markdown"
+    )
+    await state.set_state(EditBalanceState.waiting_for_amount)
 
 
-@dp.message(AddBalanceState.waiting_for_amount)
-async def process_add_balance_amount(message: types.Message, state: FSMContext):
+@dp.message(EditBalanceState.waiting_for_amount)
+async def process_edit_balance_amount(message: types.Message, state: FSMContext):
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-    try:
-        earnings = float(message.text.replace(",", "."))
-    except (ValueError, TypeError):
-        await message.answer("Пожалуйста, введи корректное число.")
+
+    raw = message.text.strip().replace(",", ".")
+    if not (raw.startswith("+") or raw.startswith("-")):
+        await message.answer("Нужно указать знак в начале: `+50` чтобы прибавить или `-20` чтобы убавить.", parse_mode="Markdown")
         return
-    await state.update_data(add_amount=earnings)
-    await message.answer("Комментарий к этой записи (или отправь «-», если не нужен):")
-    await state.set_state(AddBalanceState.waiting_for_comment)
+
+    sign = 1 if raw.startswith("+") else -1
+    try:
+        amount = float(raw[1:])
+    except (ValueError, TypeError):
+        await message.answer("Пожалуйста, введи корректное число, например `+50` или `-20.5`.", parse_mode="Markdown")
+        return
+
+    await state.update_data(edit_delta=sign * amount)
+    await message.answer("Комментарий к этому изменению (или отправь «-», если не нужен):")
+    await state.set_state(EditBalanceState.waiting_for_comment)
 
 
-@dp.message(AddBalanceState.waiting_for_comment)
-async def process_add_balance_comment(message: types.Message, state: FSMContext):
+@dp.message(EditBalanceState.waiting_for_comment)
+async def process_edit_balance_comment(message: types.Message, state: FSMContext):
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
 
     data = await state.get_data()
-    name = data['add_name']
-    username = data.get('add_username')
-    earnings = data['add_amount']
+    name = data['edit_name']
+    username = data.get('edit_username')
+    delta = data['edit_delta']
     comment = "" if message.text.strip() == "-" else message.text
 
     now = get_moscow_time()
@@ -333,13 +462,14 @@ async def process_add_balance_comment(message: types.Message, state: FSMContext)
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO shifts (user_id, username, full_name, action, timestamp, earnings, comment) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (0, username, name, "сдал", now.strftime("%Y-%m-%d %H:%M:%S"), earnings, comment)
+        (0, username, name, "корректировка", now.strftime("%Y-%m-%d %H:%M:%S"), delta, comment)
     )
     conn.commit()
     conn.close()
 
+    sign_text = f"+${delta:.2f}" if delta >= 0 else f"-${abs(delta):.2f}"
     await message.answer(
-        f"✅ Добавлено вручную: {name} — ${earnings:.2f}\n(попадёт в «Инфо за месяц»)",
+        f"✅ Баланс изменён: {name} — {sign_text}\n(попадёт в «Инфо за месяц»)",
         reply_markup=get_main_keyboard(message.from_user.id)
     )
     await state.clear()
@@ -396,7 +526,7 @@ async def process_statistics(message: types.Message):
             day = 1  # fallback, если формат даты неожиданный
 
         period = 1 if day <= 15 else 2
-        if action == "сдал" and earnings:
+        if action in ("сдал", "долет", "корректировка") and earnings:
             if period == 1:
                 chatters[key]["total_p1"] += earnings
             else:
@@ -419,6 +549,11 @@ async def process_statistics(message: types.Message):
         for dt_formatted, action, earnings, period in info["actions"]:
             if action == "принял":
                 block += f"   🟢 {dt_formatted} — принял пост\n"
+            elif action == "долет":
+                block += f"   🟠 {dt_formatted} — долёт (${earnings:.2f})\n"
+            elif action == "корректировка":
+                sign_text = f"+${earnings:.2f}" if earnings >= 0 else f"-${abs(earnings):.2f}"
+                block += f"   ✏️ {dt_formatted} — изменение баланса ({sign_text})\n"
             else:
                 block += f"   🔴 {dt_formatted} — сдал (${earnings:.2f})\n"
 
@@ -442,7 +577,7 @@ async def process_participants_list(message: types.Message):
     cursor = conn.cursor()
     cursor.execute('''
         SELECT username, full_name,
-               SUM(CASE WHEN action='сдал' THEN earnings ELSE 0 END) as total,
+               SUM(CASE WHEN action IN ('сдал', 'долет', 'корректировка') THEN earnings ELSE 0 END) as total,
                MAX(timestamp) as last_seen
         FROM shifts
         GROUP BY full_name
