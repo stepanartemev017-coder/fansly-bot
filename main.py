@@ -65,9 +65,15 @@ class EditBalanceState(StatesGroup):
     waiting_for_comment = State()
 
 
+# Тексты кнопок подменю "Инфо" — вынесены в константы, чтобы не дублировать строки
+BTN_INFO_MAIN = "📊 Инфо"
+BTN_INFO_MONTH = "📊 Инфо за месяц"
+BTN_INFO_YEAR = "📅 Инфо за год"
+BTN_BACK_MAIN = "🔙 Главное меню"
+
 # Тексты главных кнопок меню — используются, чтобы понять,
 # что пользователь хочет "выйти" из текущего процесса (например, из ввода заработка)
-MENU_PREFIXES = ("🟢", "🔴", "🟠", "📊", "🧹", "✏️", "👥")
+MENU_PREFIXES = ("🟢", "🔴", "🟠", "📊", "🧹", "✏️", "👥", "📅", "🔙")
 
 
 def is_menu_button(text: str) -> bool:
@@ -81,19 +87,26 @@ async def route_menu_button(message: types.Message, state: FSMContext):
     находясь в середине другого процесса (ввод заработка/комментария/скриншота/баланса).
     Сбрасывает текущий процесс и обрабатывает нажатую кнопку как обычно."""
     await state.clear()
-    if message.text.startswith("🟢"):
-        await process_shift_start(message, state)
-    elif message.text.startswith("🔴"):
-        await process_shift_end_start(message, state)
-    elif message.text.startswith("🟠"):
-        await process_dolyot_start(message, state)
-    elif message.text.startswith("📊"):
+    text = message.text
+    if text == BTN_INFO_MAIN:
+        await process_info_menu(message, state)
+    elif text == BTN_INFO_MONTH:
         await process_statistics(message)
-    elif message.text.startswith("🧹"):
+    elif text == BTN_INFO_YEAR:
+        await process_yearly_stats(message)
+    elif text == BTN_BACK_MAIN:
+        await process_back_to_main(message, state)
+    elif text.startswith("🟢"):
+        await process_shift_start(message, state)
+    elif text.startswith("🔴"):
+        await process_shift_end_start(message, state)
+    elif text.startswith("🟠"):
+        await process_dolyot_start(message, state)
+    elif text.startswith("🧹"):
         await process_clear_database_request(message)
-    elif message.text.startswith("✏️"):
+    elif text.startswith("✏️"):
         await process_edit_balance_start(message, state)
-    elif message.text.startswith("👥"):
+    elif text.startswith("👥"):
         await process_participants_list(message)
 
 
@@ -103,13 +116,23 @@ def get_main_keyboard(user_id: int):
         [types.KeyboardButton(text="🟢 Пост принял")],
         [types.KeyboardButton(text="🔴 Пост сдал")],
         [types.KeyboardButton(text="🟠 Долёт")],
-        [types.KeyboardButton(text="📊 Инфо за месяц")]
+        [types.KeyboardButton(text=BTN_INFO_MAIN)]
     ]
     if user_id in OWNER_IDS:
         buttons.append([types.KeyboardButton(text="✏️ Изменить баланс")])
         buttons.append([types.KeyboardButton(text="👥 Список участников")])
         buttons.append([types.KeyboardButton(text="🧹 Очистить месяц")])
 
+    return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+
+# Подменю "Инфо" — доступно всем
+def get_info_keyboard():
+    buttons = [
+        [types.KeyboardButton(text=BTN_INFO_MONTH)],
+        [types.KeyboardButton(text=BTN_INFO_YEAR)],
+        [types.KeyboardButton(text=BTN_BACK_MAIN)]
+    ]
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
@@ -142,6 +165,18 @@ async def cmd_start(message: types.Message, state: FSMContext):
 @dp.message(Command("id"))
 async def cmd_id(message: types.Message):
     await message.answer(f"🆔 Твой Telegram ID: `{message.from_user.id}`", parse_mode="Markdown")
+
+
+@dp.message(F.text == BTN_INFO_MAIN)
+async def process_info_menu(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Выбери раздел:", reply_markup=get_info_keyboard())
+
+
+@dp.message(F.text == BTN_BACK_MAIN)
+async def process_back_to_main(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Главное меню:", reply_markup=get_main_keyboard(message.from_user.id))
 
 
 @dp.message(F.text.startswith("🟢"))
@@ -475,7 +510,7 @@ async def process_edit_balance_comment(message: types.Message, state: FSMContext
     await state.clear()
 
 
-@dp.message(F.text.in_({"📊 Инфо за month", "📊 Инфо за месяц"}))
+@dp.message(F.text == BTN_INFO_MONTH)
 async def process_statistics(message: types.Message):
     now = get_moscow_time()
     # Границы текущего календарного месяца и середины (для двух периодов ЗП: 1-15 и 16-конец)
@@ -556,6 +591,72 @@ async def process_statistics(message: types.Message):
                 block += f"   ✏️ {dt_formatted} — изменение баланса ({sign_text})\n"
             else:
                 block += f"   🔴 {dt_formatted} — сдал (${earnings:.2f})\n"
+
+        # Telegram режет сообщения на 4096 символов — если ответ разрастается, шлём частями
+        if len(parts[-1]) + len(block) > 3800:
+            parts.append(block)
+        else:
+            parts[-1] += block
+
+    for part in parts:
+        await message.answer(part, parse_mode="Markdown")
+
+
+MONTH_NAMES_RU = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
+
+
+@dp.message(F.text == BTN_INFO_YEAR)
+async def process_yearly_stats(message: types.Message):
+    now = get_moscow_time()
+    year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    year_end = year_start.replace(year=now.year + 1)
+
+    year_start_str = year_start.strftime("%Y-%m-%d %H:%M:%S")
+    year_end_str = year_end.strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT user_id, username, full_name, timestamp, earnings
+        FROM shifts
+        WHERE timestamp >= ? AND timestamp < ? AND action IN ('сдал', 'долет', 'корректировка')
+        ORDER BY full_name
+    ''', (year_start_str, year_end_str))
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        await message.answer(f"📅 **ГОДОВОЙ ОТЧЁТ ЗА {now.year}**\n\nЗа этот год данных пока нет.", parse_mode="Markdown")
+        return
+
+    # Группируем заработок по каждому чаттеру и по месяцам этого года
+    chatters = {}
+    order = []
+    for user_id, username, full_name, dt_str, earnings in rows:
+        key = (user_id or 0, full_name)
+        if key not in chatters:
+            chatters[key] = {"username": username, "full_name": full_name, "months": [0.0] * 12}
+            order.append(key)
+        if username and not chatters[key]["username"]:
+            chatters[key]["username"] = username
+
+        try:
+            dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+            month_idx = dt.month - 1
+        except ValueError:
+            continue
+
+        if earnings:
+            chatters[key]["months"][month_idx] += earnings
+
+    parts = [f"📅 **ГОДОВОЙ ОТЧЁТ ЗА {now.year} (по месяцам)**\n"]
+
+    for key in order:
+        info = chatters[key]
+        user_link = f"@{info['username']}" if info['username'] else "нет юзернейма"
+        block = f"\n👤 **{info['full_name']}** ({user_link})\n"
+        for i, m_total in enumerate(info["months"]):
+            block += f"   {MONTH_NAMES_RU[i]}: ${m_total:.2f}\n"
 
         # Telegram режет сообщения на 4096 символов — если ответ разрастается, шлём частями
         if len(parts[-1]) + len(block) > 3800:
