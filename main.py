@@ -11,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ================================================
 # НАСТРОЙКИ
 # ================================================
-BOT_TOKEN = "8985257496:AAF8XxPVAA-CarYbnm8D3Pe0J65OLVOJco4"
+BOT_TOKEN = "8985257496:AAHeUUkzZQ8nrj3s5Zy5o4UNXJ1nQM5Rkag"
 ADMIN_GROUP_ID = -5136108392
 OWNER_IDS = {963341281, 8207913329}  # список ID владельцев бота (видят "Очистить месяц" и "Добавить баланс")
 # ================================================
@@ -59,11 +59,14 @@ class DolyotState(StatesGroup):
 
 
 class EditBalanceState(StatesGroup):
-    waiting_for_name = State()
     waiting_for_username = State()
     waiting_for_date = State()
     waiting_for_amount = State()
     waiting_for_comment = State()
+
+
+class ClearUserState(StatesGroup):
+    waiting_for_username = State()
 
 
 # Тексты кнопок подменю "Инфо" — вынесены в константы, чтобы не дублировать строки
@@ -76,10 +79,11 @@ BTN_BACK_MAIN = "🔙 Главное меню"
 BTN_CLEAR_MAIN = "🧹 Очистка"
 BTN_CLEAR_MONTH = "🧹 Очистить месяц"
 BTN_CLEAR_YEAR = "🧹 Очистить год"
+BTN_CLEAR_USER = "🗑 Удалить участника"
 
 # Тексты главных кнопок меню — используются, чтобы понять,
 # что пользователь хочет "выйти" из текущего процесса (например, из ввода заработка)
-MENU_PREFIXES = ("🟢", "🔴", "🟠", "📊", "🧹", "✏️", "👥", "📅", "🔙")
+MENU_PREFIXES = ("🟢", "🔴", "🟠", "📊", "🧹", "✏️", "👥", "📅", "🔙", "🗑")
 
 
 def is_menu_button(text: str) -> bool:
@@ -106,6 +110,8 @@ async def route_menu_button(message: types.Message, state: FSMContext):
         await process_clear_month_request(message)
     elif text == BTN_CLEAR_YEAR:
         await process_clear_year_request(message)
+    elif text == BTN_CLEAR_USER:
+        await process_clear_user_start(message, state)
     elif text == BTN_BACK_MAIN:
         await process_back_to_main(message, state)
     elif text.startswith("🟢"):
@@ -151,6 +157,7 @@ def get_clear_menu_keyboard():
     buttons = [
         [types.KeyboardButton(text=BTN_CLEAR_MONTH)],
         [types.KeyboardButton(text=BTN_CLEAR_YEAR)],
+        [types.KeyboardButton(text=BTN_CLEAR_USER)],
         [types.KeyboardButton(text=BTN_BACK_MAIN)]
     ]
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -162,6 +169,17 @@ def get_confirm_keyboard(scope: str):
         [
             types.InlineKeyboardButton(text="✅ Да, очистить", callback_data=f"db_confirm_clear:{scope}"),
             types.InlineKeyboardButton(text="❌ Отмена", callback_data=f"db_cancel_clear:{scope}")
+        ]
+    ]
+    return types.InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# Inline-клавиатура для подтверждения удаления конкретного участника
+def get_confirm_user_keyboard(username: str):
+    buttons = [
+        [
+            types.InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"db_confirm_clear_user:{username}"),
+            types.InlineKeyboardButton(text="❌ Отмена", callback_data="db_cancel_clear_user")
         ]
     ]
     return types.InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -223,7 +241,7 @@ async def process_shift_start(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
 
-    text_admin = f"🟢 **Пост принял**\n👤 Чаттер: {user.full_name} (@{user.username})\n🕐 Время: {now.strftime('%d.%m.%Y %H:%M')} МСК"
+    text_admin = f"🟢 **Пост принял**\n👤 Чаттер: @{user.username}\n🕐 Время: {now.strftime('%d.%m.%Y %H:%M')} МСК"
     await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
     await message.answer("✅ Вход на смену зафиксирован! Удачной работы.")
 
@@ -291,7 +309,7 @@ async def send_dolyot_report(message: types.Message, state: FSMContext, photo_id
 
     text_admin = (
         f"🟠 **Долёт (ОТЧЕТ)**\n"
-        f"👤 Чаттер: {user.full_name} (@{user.username})\n"
+        f"👤 Чаттер: @{user.username}\n"
         f"🕐 Время: {now.strftime('%d.%m.%Y %H:%M')} МСК\n"
         f"💰 Сумма: ${earnings}\n"
     )
@@ -394,7 +412,7 @@ async def send_shift_report(message: types.Message, state: FSMContext, photo_ids
 
     text_admin = (
         f"🔴 **Пост сдал (ОТЧЕТ)**\n"
-        f"👤 Чаттер: {user.full_name} (@{user.username})\n"
+        f"👤 Чаттер: @{user.username}\n"
         f"🕐 Время: {now.strftime('%d.%m.%Y %H:%M')} МСК\n"
         f"💰 Заработал: ${earnings}\n"
         f"📝 Важная инфа: {comment}"
@@ -455,17 +473,7 @@ async def process_edit_balance_start(message: types.Message, state: FSMContext):
         await message.answer("🔴 У вас нет прав для этой команды.")
         return
     await state.clear()
-    await message.answer("Введи имя чаттера, кому изменить баланс:")
-    await state.set_state(EditBalanceState.waiting_for_name)
-
-
-@dp.message(EditBalanceState.waiting_for_name)
-async def process_edit_balance_name(message: types.Message, state: FSMContext):
-    if is_menu_button(message.text):
-        await route_menu_button(message, state)
-        return
-    await state.update_data(edit_name=message.text)
-    await message.answer("Введи username чаттера без @ (или отправь «-», если username нет):")
+    await message.answer("Введи username чаттера без @, кому изменить баланс:")
     await state.set_state(EditBalanceState.waiting_for_username)
 
 
@@ -474,8 +482,10 @@ async def process_edit_balance_username(message: types.Message, state: FSMContex
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-    raw = message.text.strip().lstrip("@")
-    username = None if raw == "-" else raw
+    username = message.text.strip().lstrip("@")
+    if not username:
+        await message.answer("Username не может быть пустым. Введи username без @.")
+        return
     await state.update_data(edit_username=username)
     await message.answer(
         "На какую дату записать изменение?\n"
@@ -549,8 +559,7 @@ async def process_edit_balance_comment(message: types.Message, state: FSMContext
         return
 
     data = await state.get_data()
-    name = data['edit_name']
-    username = data.get('edit_username')
+    username = data['edit_username']
     delta = data['edit_delta']
     date_str = data['edit_date']
     comment = "" if message.text.strip() == "-" else message.text
@@ -559,7 +568,7 @@ async def process_edit_balance_comment(message: types.Message, state: FSMContext
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO shifts (user_id, username, full_name, action, timestamp, earnings, comment) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (0, username, name, "корректировка", date_str, delta, comment)
+        (0, username, username, "корректировка", date_str, delta, comment)
     )
     conn.commit()
     conn.close()
@@ -567,7 +576,7 @@ async def process_edit_balance_comment(message: types.Message, state: FSMContext
     sign_text = f"+${delta:.2f}" if delta >= 0 else f"-${abs(delta):.2f}"
     date_display = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S").strftime("%d.%m")
     await message.answer(
-        f"✅ Баланс изменён: {name} — {sign_text} (дата {date_display})\n(попадёт в «Инфо за месяц»)",
+        f"✅ Баланс изменён: @{username} — {sign_text} (дата {date_display})\n(попадёт в «Инфо за месяц»)",
         reply_markup=get_main_keyboard(message.from_user.id)
     )
     await state.clear()
@@ -589,10 +598,10 @@ async def process_statistics(message: types.Message):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT user_id, username, full_name, action, timestamp, earnings, comment
+        SELECT user_id, username, action, timestamp, earnings, comment
         FROM shifts
         WHERE timestamp >= ? AND timestamp < ?
-        ORDER BY full_name, timestamp ASC
+        ORDER BY timestamp ASC
     ''', (month_start_str, next_month_start_str))
     rows = cursor.fetchall()
     conn.close()
@@ -601,14 +610,15 @@ async def process_statistics(message: types.Message):
         await message.answer(f"📊 **ОТЧЕТ ЗА {now.strftime('%m.%Y')} (МСК)**\n\nЗа текущий месяц данных пока нет.", parse_mode="Markdown")
         return
 
-    # Группируем все записи по каждому чаттеру, отдельно считая период 1-15 и 16-конец месяца
+    # Группируем все записи по username каждого чаттера (единственный идентификатор,
+    # чтобы один и тот же человек не раздваивался из-за разных сохранённых имён)
     chatters = {}
     order = []
-    for user_id, username, full_name, action, dt_str, earnings, comment in rows:
-        key = (user_id or 0, full_name)
+    for user_id, username, action, dt_str, earnings, comment in rows:
+        key = username.strip().lower() if username else f"nouser_{user_id or 0}"
         if key not in chatters:
             chatters[key] = {
-                "username": username, "full_name": full_name,
+                "username": username, "user_id": user_id,
                 "total_p1": 0.0, "total_p2": 0.0, "actions": []
             }
             order.append(key)
@@ -636,12 +646,14 @@ async def process_statistics(message: types.Message):
 
     parts = [f"📊 **ОТЧЕТ ЗА {now.strftime('%m.%Y')} (МСК)**\n"]
 
+    order.sort(key=lambda k: (chatters[k]['username'] or '').lower())
+
     for key in order:
         info = chatters[key]
-        user_link = f"@{info['username']}" if info['username'] else "нет юзернейма"
+        user_link = f"@{info['username']}" if info['username'] else f"без username (ID {info['user_id']})"
         total = info["total_p1"] + info["total_p2"]
         block = (
-            f"\n👤 **{info['full_name']}** ({user_link})\n"
+            f"\n👤 **{user_link}**\n"
             f"   💵 1–15 число: **${info['total_p1']:.2f}**\n"
             f"   💵 16–конец месяца: **${info['total_p2']:.2f}**\n"
             f"   💰 Итого за месяц: **${total:.2f}**\n"
@@ -682,10 +694,10 @@ async def process_yearly_stats(message: types.Message):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT user_id, username, full_name, timestamp, earnings
+        SELECT user_id, username, timestamp, earnings
         FROM shifts
         WHERE timestamp >= ? AND timestamp < ? AND action IN ('сдал', 'долет', 'корректировка')
-        ORDER BY full_name
+        ORDER BY timestamp ASC
     ''', (year_start_str, year_end_str))
     rows = cursor.fetchall()
     conn.close()
@@ -694,13 +706,13 @@ async def process_yearly_stats(message: types.Message):
         await message.answer(f"📅 **ГОДОВОЙ ОТЧЁТ ЗА {now.year}**\n\nЗа этот год данных пока нет.", parse_mode="Markdown")
         return
 
-    # Группируем заработок по каждому чаттеру и по месяцам этого года
+    # Группируем заработок по username каждого чаттера и по месяцам этого года
     chatters = {}
     order = []
-    for user_id, username, full_name, dt_str, earnings in rows:
-        key = (user_id or 0, full_name)
+    for user_id, username, dt_str, earnings in rows:
+        key = username.strip().lower() if username else f"nouser_{user_id or 0}"
         if key not in chatters:
-            chatters[key] = {"username": username, "full_name": full_name, "months": [0.0] * 12}
+            chatters[key] = {"username": username, "user_id": user_id, "months": [0.0] * 12}
             order.append(key)
         if username and not chatters[key]["username"]:
             chatters[key]["username"] = username
@@ -716,10 +728,12 @@ async def process_yearly_stats(message: types.Message):
 
     parts = [f"📅 **ГОДОВОЙ ОТЧЁТ ЗА {now.year} (по месяцам)**\n"]
 
+    order.sort(key=lambda k: (chatters[k]['username'] or '').lower())
+
     for key in order:
         info = chatters[key]
-        user_link = f"@{info['username']}" if info['username'] else "нет юзернейма"
-        block = f"\n👤 **{info['full_name']}** ({user_link})\n"
+        user_link = f"@{info['username']}" if info['username'] else f"без username (ID {info['user_id']})"
+        block = f"\n👤 **{user_link}**\n"
         for i, m_total in enumerate(info["months"]):
             block += f"   {MONTH_NAMES_RU[i]}: ${m_total:.2f}\n"
 
@@ -742,12 +756,9 @@ async def process_participants_list(message: types.Message):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT username, full_name,
-               SUM(CASE WHEN action IN ('сдал', 'долет', 'корректировка') THEN earnings ELSE 0 END) as total,
-               MAX(timestamp) as last_seen
+        SELECT user_id, username, action, timestamp, earnings
         FROM shifts
-        GROUP BY full_name
-        ORDER BY full_name COLLATE NOCASE
+        ORDER BY timestamp ASC
     ''')
     rows = cursor.fetchall()
     conn.close()
@@ -756,15 +767,32 @@ async def process_participants_list(message: types.Message):
         await message.answer("👥 **СПИСОК УЧАСТНИКОВ**\n\nПока никто не отмечался.", parse_mode="Markdown")
         return
 
+    # Группируем по username — единственному идентификатору участника
+    chatters = {}
+    order = []
+    for user_id, username, action, dt_str, earnings in rows:
+        key = username.strip().lower() if username else f"nouser_{user_id or 0}"
+        if key not in chatters:
+            chatters[key] = {"username": username, "user_id": user_id, "total": 0.0, "last_seen": dt_str}
+            order.append(key)
+        if username and not chatters[key]["username"]:
+            chatters[key]["username"] = username
+        if action in ("сдал", "долет", "корректировка") and earnings:
+            chatters[key]["total"] += earnings
+        chatters[key]["last_seen"] = dt_str  # rows идут по возрастанию времени, так что последняя запись — самая свежая
+
+    order.sort(key=lambda k: (chatters[k]['username'] or '').lower())
+
     response = "👥 **СПИСОК УЧАСТНИКОВ**\n\n"
-    for username, full_name, total, last_seen in rows:
-        user_link = f"@{username}" if username else "нет юзернейма"
+    for key in order:
+        info = chatters[key]
+        user_link = f"@{info['username']}" if info['username'] else f"без username (ID {info['user_id']})"
         try:
-            last_dt = datetime.strptime(last_seen, "%Y-%m-%d %H:%M:%S")
+            last_dt = datetime.strptime(info["last_seen"], "%Y-%m-%d %H:%M:%S")
             last_str = last_dt.strftime("%d.%m.%Y %H:%M")
         except (ValueError, TypeError):
-            last_str = last_seen or "—"
-        response += f"• **{full_name}** ({user_link})\n   Всего заработано: ${total:.2f} | Последняя активность: {last_str}\n\n"
+            last_str = info["last_seen"] or "—"
+        response += f"• **{user_link}**\n   Всего заработано: ${info['total']:.2f} | Последняя активность: {last_str}\n\n"
 
     await message.answer(response, parse_mode="Markdown")
 
@@ -835,6 +863,60 @@ async def callback_confirm_clear(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("db_cancel_clear:"))
 async def callback_cancel_clear(callback: types.CallbackQuery):
     await callback.message.edit_text("❌ Очистка отменена. Данные чаттеров в безопасности.")
+    await callback.answer("Действие отменено.")
+
+
+@dp.message(F.text == BTN_CLEAR_USER)
+async def process_clear_user_start(message: types.Message, state: FSMContext):
+    if message.from_user.id not in OWNER_IDS:
+        await message.answer("🔴 У вас нет прав для этой команды.")
+        return
+    await state.clear()
+    await message.answer("Введи username участника без @, которого нужно полностью удалить из всей статистики:")
+    await state.set_state(ClearUserState.waiting_for_username)
+
+
+@dp.message(ClearUserState.waiting_for_username)
+async def process_clear_user_username(message: types.Message, state: FSMContext):
+    if is_menu_button(message.text):
+        await route_menu_button(message, state)
+        return
+
+    username = message.text.strip().lstrip("@")
+    if not username:
+        await message.answer("Username не может быть пустым. Введи username без @.")
+        return
+
+    await state.clear()
+    await message.answer(
+        f"⚠️ **ВНИМАНИЕ!** Вы собираетесь полностью удалить участника @{username} из всей статистики "
+        f"(все месяцы и годы, без возможности восстановить). Вы уверены?",
+        reply_markup=get_confirm_user_keyboard(username),
+        parse_mode="Markdown"
+    )
+
+
+@dp.callback_query(F.data.startswith("db_confirm_clear_user:"))
+async def callback_confirm_clear_user(callback: types.CallbackQuery):
+    if callback.from_user.id not in OWNER_IDS:
+        await callback.answer("🔴 Отказано в доступе.", show_alert=True)
+        return
+
+    username = callback.data.split(":", 1)[1]
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM shifts WHERE LOWER(username) = LOWER(?)", (username,))
+    conn.commit()
+    conn.close()
+
+    await callback.message.edit_text(f"🗑 **Участник @{username} полностью удалён из статистики.**", parse_mode="Markdown")
+    await callback.answer("Удалено!")
+
+
+@dp.callback_query(F.data == "db_cancel_clear_user")
+async def callback_cancel_clear_user(callback: types.CallbackQuery):
+    await callback.message.edit_text("❌ Удаление отменено.")
     await callback.answer("Действие отменено.")
 
 
