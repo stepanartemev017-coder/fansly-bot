@@ -1,7 +1,9 @@
 import os
 import sqlite3
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
+
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -16,12 +18,23 @@ ADMIN_GROUP_ID = -1004458669568
 OWNER_IDS = {963341281, 8207913329}  # список ID владельцев бота (видят "Очистить месяц" и "Добавить баланс")
 # ================================================
 
+# ---------- Логирование ----------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("bot.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
 DB_NAME = "reports.db"
 
 
-# Функция получения текущего времени по Москве (UTC+3)
 def get_moscow_time():
     tz_moscow = timezone(timedelta(hours=3))
     return datetime.now(tz_moscow)
@@ -136,9 +149,8 @@ def get_main_keyboard(user_id: int):
     ]
     if user_id in OWNER_IDS:
         buttons.append([types.KeyboardButton(text="✏️ Изменить баланс")])
-        buttons.append([types.KeyboardButton(text="👥 Список участников")])
-        buttons.append([types.KeyboardButton(text=BTN_CLEAR_MAIN)])
-
+    buttons.append([types.KeyboardButton(text="👥 Список участников")])
+    buttons.append([types.KeyboardButton(text=BTN_CLEAR_MAIN)])
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
@@ -242,8 +254,16 @@ async def process_shift_start(message: types.Message, state: FSMContext):
     conn.close()
 
     text_admin = f"🟢 **Пост принял**\n👤 Чаттер: @{user.username}\n🕐 Время: {now.strftime('%d.%m.%Y %H:%M')} МСК"
-    await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
-    await message.answer("✅ Вход на смену зафиксирован! Удачной работы.")
+
+    try:
+        await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
+        await message.answer("✅ Вход на смену зафиксирован! Удачной работы.")
+    except Exception as e:
+        logger.error(f"Не удалось отправить в группу (Пост принял) для @{user.username}: {e}")
+        await message.answer(
+            "⚠️ Смена зафиксирована, но не удалось отправить уведомление в группу (техническая ошибка). "
+            "Сообщи об этом администратору."
+        )
 
 
 @dp.message(F.text.startswith("🔴"))
@@ -265,7 +285,6 @@ async def process_dolyot_earnings(message: types.Message, state: FSMContext):
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-
     try:
         earnings = float(message.text.replace(",", "."))
         await state.update_data(dolyot_earnings=earnings)
@@ -280,7 +299,6 @@ async def process_dolyot_comment(message: types.Message, state: FSMContext):
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-
     comment = "" if message.text.strip() == "-" else message.text
     await state.update_data(dolyot_comment=comment)
     await message.answer("Отправь скриншот(ы) долёта.")
@@ -294,7 +312,6 @@ async def send_dolyot_report(message: types.Message, state: FSMContext, photo_id
     user = message.from_user
     now = get_moscow_time()
     data = await state.get_data()
-
     earnings = data.get('dolyot_earnings')
     comment = data.get('dolyot_comment') or ""
 
@@ -316,14 +333,22 @@ async def send_dolyot_report(message: types.Message, state: FSMContext, photo_id
     if comment:
         text_admin += f"📝 Комментарий: {comment}"
 
-    if len(photo_ids) == 1:
-        await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
-    else:
-        media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
-        media += [types.InputMediaPhoto(media=pid) for pid in photo_ids[1:]]
-        await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media)
+    try:
+        if len(photo_ids) == 1:
+            await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
+        else:
+            media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
+            media += [types.InputMediaPhoto(media=pid) for pid in photo_ids[1:]]
+            await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media)
+        await message.answer("✅ Отчет по долёту отправлен руководству!", reply_markup=get_main_keyboard(user.id))
+    except Exception as e:
+        logger.error(f"Не удалось отправить отчёт (долёт) в группу для @{user.username}: {e}")
+        await message.answer(
+            "⚠️ Долёт записан, но отчёт не удалось отправить в группу (техническая ошибка). "
+            "Напиши об этом администратору.",
+            reply_markup=get_main_keyboard(user.id)
+        )
 
-    await message.answer("✅ Отчет по долёту отправлен руководству!", reply_markup=get_main_keyboard(user.id))
     await state.clear()
 
 
@@ -356,7 +381,6 @@ async def process_dolyot_screenshot_wrong_content(message: types.Message, state:
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-
     await message.answer("Пожалуйста, отправь именно фото (скриншот) долёта.")
 
 
@@ -365,7 +389,6 @@ async def process_earnings(message: types.Message, state: FSMContext):
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-
     try:
         earnings = float(message.text.replace(",", "."))
         await state.update_data(earnings=earnings)
@@ -380,7 +403,6 @@ async def process_info(message: types.Message, state: FSMContext):
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-
     await state.update_data(comment=message.text)
     await message.answer("Отправь скриншот(ы) продаж.")
     await state.set_state(ShiftState.waiting_for_screenshot)
@@ -397,7 +419,6 @@ async def send_shift_report(message: types.Message, state: FSMContext, photo_ids
     user = message.from_user
     now = get_moscow_time()
     data = await state.get_data()
-
     earnings = data.get('earnings')
     comment = data.get('comment')
 
@@ -418,14 +439,22 @@ async def send_shift_report(message: types.Message, state: FSMContext, photo_ids
         f"📝 Важная инфа: {comment}"
     )
 
-    if len(photo_ids) == 1:
-        await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
-    else:
-        media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
-        media += [types.InputMediaPhoto(media=pid) for pid in photo_ids[1:]]
-        await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media)
+    try:
+        if len(photo_ids) == 1:
+            await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
+        else:
+            media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
+            media += [types.InputMediaPhoto(media=pid) for pid in photo_ids[1:]]
+            await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media)
+        await message.answer("✅ Отчет успешно отправлен руководству! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
+    except Exception as e:
+        logger.error(f"Не удалось отправить отчёт (сдал) в группу для @{user.username}: {e}")
+        await message.answer(
+            "⚠️ Заработок записан, но отчёт не удалось отправить в группу (техническая ошибка). "
+            "Напиши об этом администратору.",
+            reply_markup=get_main_keyboard(user.id)
+        )
 
-    await message.answer("✅ Отчет успешно отправлен руководству! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
     await state.clear()
 
 
@@ -461,12 +490,10 @@ async def process_screenshot_wrong_content(message: types.Message, state: FSMCon
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-
     await message.answer("Пожалуйста, отправь именно фото (скриншот) продаж.")
 
 
 # ---------- Изменение баланса вручную (кнопкой): плюс или минус ----------
-
 @dp.message(F.text.startswith("✏️"))
 async def process_edit_balance_start(message: types.Message, state: FSMContext):
     if message.from_user.id not in OWNER_IDS:
@@ -500,10 +527,8 @@ async def process_edit_balance_date(message: types.Message, state: FSMContext):
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-
     now = get_moscow_time()
     raw = message.text.strip()
-
     if raw == "-":
         chosen_dt = now
     else:
@@ -534,19 +559,16 @@ async def process_edit_balance_amount(message: types.Message, state: FSMContext)
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-
     raw = message.text.strip().replace(",", ".")
     if not (raw.startswith("+") or raw.startswith("-")):
         await message.answer("Нужно указать знак в начале: `+50` чтобы прибавить или `-20` чтобы убавить.", parse_mode="Markdown")
         return
-
     sign = 1 if raw.startswith("+") else -1
     try:
         amount = float(raw[1:])
     except (ValueError, TypeError):
         await message.answer("Пожалуйста, введи корректное число, например `+50` или `-20.5`.", parse_mode="Markdown")
         return
-
     await state.update_data(edit_delta=sign * amount)
     await message.answer("Комментарий к этому изменению (или отправь «-», если не нужен):")
     await state.set_state(EditBalanceState.waiting_for_comment)
@@ -557,7 +579,6 @@ async def process_edit_balance_comment(message: types.Message, state: FSMContext
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-
     data = await state.get_data()
     username = data['edit_username']
     delta = data['edit_delta']
@@ -636,6 +657,7 @@ async def process_statistics(message: types.Message):
             day = 1  # fallback, если формат даты неожиданный
 
         period = 1 if day <= 15 else 2
+
         if action in ("сдал", "долет", "корректировка") and earnings:
             if period == 1:
                 chatters[key]["total_p1"] += earnings
@@ -645,7 +667,6 @@ async def process_statistics(message: types.Message):
         chatters[key]["actions"].append((dt_formatted, date_short, action, earnings, comment, period))
 
     parts = [f"📊 **ОТЧЕТ ЗА {now.strftime('%m.%Y')} (МСК)**\n"]
-
     order.sort(key=lambda k: (chatters[k]['username'] or '').lower())
 
     for key in order:
@@ -660,14 +681,14 @@ async def process_statistics(message: types.Message):
         )
         for dt_formatted, date_short, action, earnings, comment, period in info["actions"]:
             if action == "принял":
-                block += f"   🟢 {dt_formatted} — принял пост\n"
+                block += f"     🟢 {dt_formatted} — принял пост\n"
             elif action == "долет":
-                block += f"   🟠 {dt_formatted} — долёт (${earnings:.2f})\n"
+                block += f"     🟠 {dt_formatted} — долёт (${earnings:.2f})\n"
             elif action == "корректировка":
                 comment_part = f" {comment}" if comment else ""
-                block += f"   ✏️ Изменение баланса. {date_short}.{comment_part}\n"
+                block += f"     ✏️ Изменение баланса. {date_short}.{comment_part}\n"
             else:
-                block += f"   🔴 {dt_formatted} — сдал (${earnings:.2f})\n"
+                block += f"     🔴 {dt_formatted} — сдал (${earnings:.2f})\n"
 
         # Telegram режет сообщения на 4096 символов — если ответ разрастается, шлём частями
         if len(parts[-1]) + len(block) > 3800:
@@ -727,7 +748,6 @@ async def process_yearly_stats(message: types.Message):
             chatters[key]["months"][month_idx] += earnings
 
     parts = [f"📅 **ГОДОВОЙ ОТЧЁТ ЗА {now.year} (по месяцам)**\n"]
-
     order.sort(key=lambda k: (chatters[k]['username'] or '').lower())
 
     for key in order:
@@ -802,7 +822,6 @@ async def process_clear_month_request(message: types.Message):
     if message.from_user.id not in OWNER_IDS:
         await message.answer("🔴 У вас нет прав для выполнения этой команды.")
         return
-
     await message.answer(
         "⚠️ **ВНИМАНИЕ!** Вы собираетесь очистить данные за ТЕКУЩИЙ МЕСЯЦ.\n"
         "Все действия (принял/сдал/долёт/корректировки) за этот месяц будут безвозвратно удалены. Вы уверены?",
@@ -816,7 +835,6 @@ async def process_clear_year_request(message: types.Message):
     if message.from_user.id not in OWNER_IDS:
         await message.answer("🔴 У вас нет прав для выполнения этой команды.")
         return
-
     await message.answer(
         "⚠️ **ВНИМАНИЕ!** Вы собираетесь очистить данные за ТЕКУЩИЙ ГОД (все 12 месяцев).\n"
         "Все действия за этот год будут безвозвратно удалены. Вы уверены?",
@@ -881,12 +899,10 @@ async def process_clear_user_username(message: types.Message, state: FSMContext)
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-
     username = message.text.strip().lstrip("@")
     if not username:
         await message.answer("Username не может быть пустым. Введи username без @.")
         return
-
     await state.clear()
     await message.answer(
         f"⚠️ **ВНИМАНИЕ!** Вы собираетесь полностью удалить участника @{username} из всей статистики "
@@ -920,10 +936,27 @@ async def callback_cancel_clear_user(callback: types.CallbackQuery):
     await callback.answer("Действие отменено.")
 
 
+# ---------- Обработчик "потерянных" сообщений ----------
+# Если фото пришло, а бот не ожидает его ни в одном состоянии (например,
+# состояние стёрлось из-за перезапуска бота), это фото раньше просто пропадало
+# без следа. Теперь бот честно сообщит об этом и попросит начать заново,
+# а в bot.log останется запись для диагностики.
+@dp.message(F.photo)
+async def process_lost_photo(message: types.Message, state: FSMContext):
+    logger.warning(
+        f"Получено фото вне ожидаемого состояния от @{message.from_user.username} (id {message.from_user.id})"
+    )
+    await message.answer(
+        "⚠️ Я не ожидал сейчас скриншот — похоже, процесс отчёта прервался (например, из-за перезапуска бота).\n"
+        "Пожалуйста, начни заново: нажми «🔴 Пост сдал» или «🟠 Долёт».",
+        reply_markup=get_main_keyboard(message.from_user.id)
+    )
+
+
 # --- ПРАВИЛЬНЫЙ АСИНХРОННЫЙ ЗАПУСК ДЛЯ AIOGRAM 3 ---
 async def main():
     init_db()
-    print("Бот успешно запущен на московском времени (период: месяц)...")
+    logger.info("Бот успешно запущен на московском времени (период: месяц)...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
