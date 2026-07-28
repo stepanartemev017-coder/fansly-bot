@@ -12,7 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # НАСТРОЙКИ
 # ================================================
 BOT_TOKEN = "8985257496:AAF8XxPVAA-CarYbnm8D3Pe0J65OLVOJco4"
-ADMIN_GROUP_ID = -5136108392
+ADMIN_GROUP_ID = -1004458669568
 OWNER_IDS = {963341281, 8207913329}  # список ID владельцев бота (видят "Очистить месяц" и "Добавить баланс")
 # ================================================
 
