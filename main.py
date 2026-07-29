@@ -34,6 +34,64 @@ dp = Dispatcher(storage=MemoryStorage())
 
 DB_NAME = "reports.db"
 
+# Сколько раз пробовать отправить сообщение в группу, прежде чем сдаться
+SEND_MAX_RETRIES = 5
+# Пауза между попытками (секунды) — увеличивается с каждой попыткой
+SEND_RETRY_DELAY = 3
+
+
+async def send_report_to_group(text_admin: str, photo_ids: list, context_label: str, username: str):
+    """Максимально надёжная отправка отчёта в группу.
+
+    Логика:
+    1. Пытается отправить фото (одно или альбом) с подписью — до SEND_MAX_RETRIES раз.
+    2. Если с фото так и не получилось (например, файл слетел, или временная ошибка Telegram) —
+       пробует отправить хотя бы ТЕКСТ отчёта без фото, тоже с повторами.
+    3. Возвращает True, если отчёт в итоге дошёл (с фото или без), False — если не дошёл вообще никак.
+    Ни при каких обстоятельствах не выбрасывает исключение наружу — вызывающий код всегда
+    получает True/False и не падает.
+    """
+    async def _attempt(send_coro_factory):
+        last_error = None
+        for attempt in range(1, SEND_MAX_RETRIES + 1):
+            try:
+                await send_coro_factory()
+                return True
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"[{context_label}] Попытка {attempt}/{SEND_MAX_RETRIES} отправки в группу для "
+                    f"@{username} не удалась: {e}"
+                )
+                if attempt < SEND_MAX_RETRIES:
+                    await asyncio.sleep(SEND_RETRY_DELAY * attempt)
+        logger.error(
+            f"[{context_label}] Все {SEND_MAX_RETRIES} попыток отправки в группу для @{username} "
+            f"провалились. Последняя ошибка: {last_error}"
+        )
+        return False
+
+    if photo_ids:
+        if len(photo_ids) == 1:
+            async def send_photo_attempt():
+                await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
+        else:
+            async def send_photo_attempt():
+                media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
+                media += [types.InputMediaPhoto(media=pid) for pid in photo_ids[1:]]
+                await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media)
+
+        ok = await _attempt(send_photo_attempt)
+        if ok:
+            return True
+
+        logger.warning(f"[{context_label}] Не удалось отправить с фото, пробую отправить только текст для @{username}.")
+
+    async def send_text_attempt():
+        await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
+
+    return await _attempt(send_text_attempt)
+
 
 def get_moscow_time():
     tz_moscow = timezone(timedelta(hours=3))
@@ -255,11 +313,10 @@ async def process_shift_start(message: types.Message, state: FSMContext):
 
     text_admin = f"🟢 **Пост принял**\n👤 Чаттер: @{user.username}\n🕐 Время: {now.strftime('%d.%m.%Y %H:%M')} МСК"
 
-    try:
-        await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
+    ok = await send_report_to_group(text_admin, [], "Пост принял", user.username or str(user.id))
+    if ok:
         await message.answer("✅ Вход на смену зафиксирован! Удачной работы.")
-    except Exception as e:
-        logger.error(f"Не удалось отправить в группу (Пост принял) для @{user.username}: {e}")
+    else:
         await message.answer(
             "⚠️ Смена зафиксирована, но не удалось отправить уведомление в группу (техническая ошибка). "
             "Сообщи об этом администратору."
@@ -333,18 +390,10 @@ async def send_dolyot_report(message: types.Message, state: FSMContext, photo_id
     if comment:
         text_admin += f"📝 Комментарий: {comment}"
 
-    try:
-        if not photo_ids:
-            await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
-        elif len(photo_ids) == 1:
-            await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
-        else:
-            media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
-            media += [types.InputMediaPhoto(media=pid) for pid in photo_ids[1:]]
-            await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media)
+    ok = await send_report_to_group(text_admin, photo_ids, "Долёт", user.username or str(user.id))
+    if ok:
         await message.answer("✅ Отчет по долёту отправлен руководству!", reply_markup=get_main_keyboard(user.id))
-    except Exception as e:
-        logger.error(f"Не удалось отправить отчёт (долёт) в группу для @{user.username}: {e}")
+    else:
         await message.answer(
             "⚠️ Долёт записан, но отчёт не удалось отправить в группу (техническая ошибка). "
             "Напиши об этом администратору.",
@@ -444,18 +493,10 @@ async def send_shift_report(message: types.Message, state: FSMContext, photo_ids
         f"📝 Важная инфа: {comment}"
     )
 
-    try:
-        if not photo_ids:
-            await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
-        elif len(photo_ids) == 1:
-            await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
-        else:
-            media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
-            media += [types.InputMediaPhoto(media=pid) for pid in photo_ids[1:]]
-            await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media)
+    ok = await send_report_to_group(text_admin, photo_ids, "Пост сдал", user.username or str(user.id))
+    if ok:
         await message.answer("✅ Отчет успешно отправлен руководству! Спасибо за смену.", reply_markup=get_main_keyboard(user.id))
-    except Exception as e:
-        logger.error(f"Не удалось отправить отчёт (сдал) в группу для @{user.username}: {e}")
+    else:
         await message.answer(
             "⚠️ Заработок записан, но отчёт не удалось отправить в группу (техническая ошибка). "
             "Напиши об этом администратору.",
@@ -963,11 +1004,22 @@ async def process_lost_photo(message: types.Message, state: FSMContext):
     )
 
 
+@dp.error()
+async def global_error_handler(event):
+    """Ловит абсолютно любое необработанное исключение в любом хендлере,
+    чтобы бот никогда не падал молча и не терял апдейт без следа."""
+    logger.error(f"Необработанная ошибка в хендлере: {event.exception}", exc_info=event.exception)
+    return True
+
+
 # --- ПРАВИЛЬНЫЙ АСИНХРОННЫЙ ЗАПУСК ДЛЯ AIOGRAM 3 ---
 async def main():
     init_db()
     logger.info("Бот успешно запущен на московском времени (период: месяц)...")
-    await bot.delete_webhook(drop_pending_updates=True)
+    # drop_pending_updates=False: если бот был offline (перезапуск/сбой), сообщения,
+    # накопившиеся за это время (в т.ч. отчёты чаттеров), не удаляются, а обрабатываются
+    # при старте — раньше они терялись безвозвратно.
+    await bot.delete_webhook(drop_pending_updates=False)
     await dp.start_polling(bot)
 
 
