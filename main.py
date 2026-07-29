@@ -301,7 +301,7 @@ async def process_dolyot_comment(message: types.Message, state: FSMContext):
         return
     comment = "" if message.text.strip() == "-" else message.text
     await state.update_data(dolyot_comment=comment)
-    await message.answer("Отправь скриншот(ы) долёта.")
+    await message.answer("Отправь скриншот(ы) долёта (или «-», если скриншота нет).")
     await state.set_state(DolyotState.waiting_for_screenshot)
 
 
@@ -334,7 +334,9 @@ async def send_dolyot_report(message: types.Message, state: FSMContext, photo_id
         text_admin += f"📝 Комментарий: {comment}"
 
     try:
-        if len(photo_ids) == 1:
+        if not photo_ids:
+            await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
+        elif len(photo_ids) == 1:
             await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
         else:
             media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
@@ -381,7 +383,10 @@ async def process_dolyot_screenshot_wrong_content(message: types.Message, state:
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-    await message.answer("Пожалуйста, отправь именно фото (скриншот) долёта.")
+    if message.text and message.text.strip() == "-":
+        await send_dolyot_report(message, state, [])
+        return
+    await message.answer("Пожалуйста, отправь фото (скриншот) долёта, либо «-», если скриншота нет.")
 
 
 @dp.message(ShiftState.waiting_for_earnings)
@@ -404,7 +409,7 @@ async def process_info(message: types.Message, state: FSMContext):
         await route_menu_button(message, state)
         return
     await state.update_data(comment=message.text)
-    await message.answer("Отправь скриншот(ы) продаж.")
+    await message.answer("Отправь скриншот(ы) продаж (или «-», если скриншота нет).")
     await state.set_state(ShiftState.waiting_for_screenshot)
 
 
@@ -440,7 +445,9 @@ async def send_shift_report(message: types.Message, state: FSMContext, photo_ids
     )
 
     try:
-        if len(photo_ids) == 1:
+        if not photo_ids:
+            await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
+        elif len(photo_ids) == 1:
             await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
         else:
             media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
@@ -490,7 +497,10 @@ async def process_screenshot_wrong_content(message: types.Message, state: FSMCon
     if is_menu_button(message.text):
         await route_menu_button(message, state)
         return
-    await message.answer("Пожалуйста, отправь именно фото (скриншот) продаж.")
+    if message.text and message.text.strip() == "-":
+        await send_shift_report(message, state, [])
+        return
+    await message.answer("Пожалуйста, отправь фото (скриншот) продаж, либо «-», если скриншота нет.")
 
 
 # ---------- Изменение баланса вручную (кнопкой): плюс или минус ----------
