@@ -74,10 +74,10 @@ async def send_report_to_group(text_admin: str, photo_ids: list, context_label: 
     if photo_ids:
         if len(photo_ids) == 1:
             async def send_photo_attempt():
-                await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin, parse_mode="Markdown")
+                await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_ids[0], caption=text_admin)
         else:
             async def send_photo_attempt():
-                media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin, parse_mode="Markdown")]
+                media = [types.InputMediaPhoto(media=photo_ids[0], caption=text_admin)]
                 media += [types.InputMediaPhoto(media=pid) for pid in photo_ids[1:]]
                 await bot.send_media_group(chat_id=ADMIN_GROUP_ID, media=media)
 
@@ -88,9 +88,20 @@ async def send_report_to_group(text_admin: str, photo_ids: list, context_label: 
         logger.warning(f"[{context_label}] Не удалось отправить с фото, пробую отправить только текст для @{username}.")
 
     async def send_text_attempt():
-        await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin, parse_mode="Markdown")
+        await bot.send_message(chat_id=ADMIN_GROUP_ID, text=text_admin)
 
     return await _attempt(send_text_attempt)
+
+
+def escape_markdown(text: str) -> str:
+    """Экранирует символы, которые Telegram Markdown воспринимает как разметку
+    (_, *, `, [), чтобы свободный текст пользователя (комментарии и т.п.)
+    не мог случайно сломать парсинг сообщения."""
+    if not text:
+        return text
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, "\\" + ch)
+    return text
 
 
 def get_moscow_time():
@@ -311,7 +322,7 @@ async def process_shift_start(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
 
-    text_admin = f"🟢 **Пост принял**\n👤 Чаттер: @{user.username}\n🕐 Время: {now.strftime('%d.%m.%Y %H:%M')} МСК"
+    text_admin = f"🟢 Пост принял\n👤 Чаттер: @{user.username}\n🕐 Время: {now.strftime('%d.%m.%Y %H:%M')} МСК"
 
     ok = await send_report_to_group(text_admin, [], "Пост принял", user.username or str(user.id))
     if ok:
@@ -382,7 +393,7 @@ async def send_dolyot_report(message: types.Message, state: FSMContext, photo_id
     conn.close()
 
     text_admin = (
-        f"🟠 **Долёт (ОТЧЕТ)**\n"
+        f"🟠 Долёт (ОТЧЕТ)\n"
         f"👤 Чаттер: @{user.username}\n"
         f"🕐 Время: {now.strftime('%d.%m.%Y %H:%M')} МСК\n"
         f"💰 Сумма: ${earnings}\n"
@@ -486,7 +497,7 @@ async def send_shift_report(message: types.Message, state: FSMContext, photo_ids
     conn.close()
 
     text_admin = (
-        f"🔴 **Пост сдал (ОТЧЕТ)**\n"
+        f"🔴 Пост сдал (ОТЧЕТ)\n"
         f"👤 Чаттер: @{user.username}\n"
         f"🕐 Время: {now.strftime('%d.%m.%Y %H:%M')} МСК\n"
         f"💰 Заработал: ${earnings}\n"
@@ -736,7 +747,7 @@ async def process_statistics(message: types.Message):
             elif action == "долет":
                 block += f"     🟠 {dt_formatted} — долёт (${earnings:.2f})\n"
             elif action == "корректировка":
-                comment_part = f" {comment}" if comment else ""
+                comment_part = f" {escape_markdown(comment)}" if comment else ""
                 block += f"     ✏️ Изменение баланса. {date_short}.{comment_part}\n"
             else:
                 block += f"     🔴 {dt_formatted} — сдал (${earnings:.2f})\n"
